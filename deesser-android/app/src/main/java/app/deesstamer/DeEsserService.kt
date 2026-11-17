@@ -110,11 +110,11 @@ class DeEsserService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val sessions = AppState.engine.sessions()
-        val text = when (AppState.params.target) {
-            TargetMode.GLOBAL ->
+        val text = when (AppState.params.applyMode) {
+            ApplyMode.GLOBAL ->
                 if (sessions.any { it.sessionId == AppState.GLOBAL_SESSION }) getString(R.string.notif_global_on)
                 else getString(R.string.notif_global_failed)
-            TargetMode.SESSIONS ->
+            ApplyMode.SESSIONS ->
                 getString(R.string.notif_sessions, sessions.count { it.sessionId != AppState.GLOBAL_SESSION })
         }
         return Notification.Builder(this, CHANNEL_ID)

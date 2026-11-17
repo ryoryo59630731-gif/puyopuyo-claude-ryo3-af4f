@@ -74,101 +74,78 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp" />
 
-        <!-- Frequency range -->
+        <!-- Harsh-sound targets -->
         <TextView
             style="@style/SectionTitle"
-            android:text="@string/section_range" />
+            android:text="@string/section_focus" />
 
         <RadioGroup
-            android:id="@+id/rangeGroup"
+            android:id="@+id/focusGroup"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal">
 
             <RadioButton
-                android:id="@+id/rangeLowHi"
-                style="@style/Segment"
-                android:text="@string/range_low_hi" />
+                android:id="@+id/focusGuitar"
+                style="@style/Segment" />
 
             <RadioButton
-                android:id="@+id/rangeMidHi"
-                style="@style/Segment"
-                android:text="@string/range_mid_hi" />
+                android:id="@+id/focusVocal"
+                style="@style/Segment" />
 
             <RadioButton
-                android:id="@+id/rangeHigh"
-                style="@style/Segment"
-                android:text="@string/range_high" />
-
-            <RadioButton
-                android:id="@+id/rangeHiEnd"
-                style="@style/Segment"
-                android:text="@string/range_hi_end" />
-
-            <RadioButton
-                android:id="@+id/rangeCustom"
-                style="@style/Segment"
-                android:text="@string/range_custom" />
+                android:id="@+id/focusHihat"
+                style="@style/Segment" />
         </RadioGroup>
 
         <LinearLayout
-            android:id="@+id/customRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            style="@style/Panel"
             android:layout_marginTop="8dp"
-            android:gravity="center"
-            android:orientation="horizontal"
-            android:visibility="gone">
+            android:orientation="vertical">
 
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/customLow"
-                android:layout_width="96dp"
-                android:layout_height="wrap_content" />
+            <Switch
+                android:id="@+id/focusEnabled"
+                style="@style/SettingSwitch" />
 
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/customHigh"
-                android:layout_width="96dp"
-                android:layout_height="wrap_content" />
-        </LinearLayout>
-
-        <!-- Main knobs -->
-        <TextView
-            style="@style/SectionTitle"
-            android:text="@string/section_dynamics" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/processing"
-                android:layout_width="0dp"
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_weight="1" />
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
 
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/intensity"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/focusLow"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
 
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/sharpness"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/focusHigh"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
 
-            <app.deesstamer.ui.KnobView
-                android:id="@+id/mix"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/processing"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/intensity"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/focusHint"
+                style="@style/Hint" />
         </LinearLayout>
 
         <TextView
             style="@style/Hint"
-            android:text="@string/hint_knobs" />
+            android:text="@string/hint_focus" />
 
         <!-- Listen -->
         <TextView
@@ -196,7 +173,40 @@
             style="@style/Hint"
             android:text="@string/hint_listen" />
 
-        <!-- High shelf + output -->
+        <!-- Shared controls -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_common" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/sharpness"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/mix"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/outputGain"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Hint"
+            android:text="@string/hint_common" />
+
+        <!-- High shelf -->
         <TextView
             style="@style/SectionTitle"
             android:text="@string/section_tone" />
@@ -214,57 +224,50 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
+                android:gravity="center_horizontal"
                 android:orientation="horizontal">
 
                 <app.deesstamer.ui.KnobView
                     android:id="@+id/shelfFreq"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1" />
+                    android:layout_width="96dp"
+                    android:layout_height="wrap_content" />
 
                 <app.deesstamer.ui.KnobView
                     android:id="@+id/shelfGain"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1" />
-
-                <app.deesstamer.ui.KnobView
-                    android:id="@+id/outputGain"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1" />
+                    android:layout_width="96dp"
+                    android:layout_height="wrap_content" />
             </LinearLayout>
         </LinearLayout>
 
-        <!-- Targets -->
+        <!-- Apply mode -->
         <TextView
             style="@style/SectionTitle"
-            android:text="@string/section_targets" />
+            android:text="@string/section_apply" />
 
         <LinearLayout
             style="@style/Panel"
             android:orientation="vertical">
 
             <RadioGroup
-                android:id="@+id/targetGroup"
+                android:id="@+id/applyGroup"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
 
                 <RadioButton
-                    android:id="@+id/targetGlobal"
+                    android:id="@+id/applyGlobal"
                     style="@style/Segment"
-                    android:text="@string/target_global" />
+                    android:text="@string/apply_global" />
 
                 <RadioButton
-                    android:id="@+id/targetSessions"
+                    android:id="@+id/applySessions"
                     style="@style/Segment"
-                    android:text="@string/target_sessions" />
+                    android:text="@string/apply_sessions" />
             </RadioGroup>
 
             <TextView
                 style="@style/Hint"
-                android:text="@string/target_hint" />
+                android:text="@string/apply_hint" />
 
             <Switch
                 android:id="@+id/bootSwitch"

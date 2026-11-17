@@ -15,40 +15,55 @@ class Prefs(context: Context) {
     fun load(): DeEsserParams {
         val d = DeEsserParams()
         return DeEsserParams(
-            processing = sp.getFloat("processing", d.processing),
-            intensity = sp.getFloat("intensity", d.intensity),
+            guitar = loadFocus(Focus.GUITAR, d.guitar),
+            vocal = loadFocus(Focus.VOCAL, d.vocal),
+            hihat = loadFocus(Focus.HIHAT, d.hihat),
+            selected = enumOr(sp.getString("selected", null), d.selected),
             sharpness = sp.getFloat("sharpness", d.sharpness),
             mix = sp.getFloat("mix", d.mix),
-            range = enumOr(sp.getString("range", null), d.range),
-            customLowHz = sp.getFloat("customLowHz", d.customLowHz),
-            customHighHz = sp.getFloat("customHighHz", d.customHighHz),
             listen = enumOr(sp.getString("listen", null), d.listen),
             shelfEnabled = sp.getBoolean("shelfEnabled", d.shelfEnabled),
             shelfFreqHz = sp.getFloat("shelfFreqHz", d.shelfFreqHz),
             shelfGainDb = sp.getFloat("shelfGainDb", d.shelfGainDb),
             outputGainDb = sp.getFloat("outputGainDb", d.outputGainDb),
-            target = enumOr(sp.getString("target", null), d.target),
+            // Key kept from v1 ("target") so the apply-mode choice survives the update.
+            applyMode = enumOr(sp.getString("target", null), d.applyMode),
             startOnBoot = sp.getBoolean("startOnBoot", d.startOnBoot),
         )
     }
 
     fun save(p: DeEsserParams) {
-        sp.edit()
-            .putFloat("processing", p.processing)
-            .putFloat("intensity", p.intensity)
+        val e = sp.edit()
+        for (f in Focus.entries) saveFocus(e, f, p.focus(f))
+        e.putString("selected", p.selected.name)
             .putFloat("sharpness", p.sharpness)
             .putFloat("mix", p.mix)
-            .putString("range", p.range.name)
-            .putFloat("customLowHz", p.customLowHz)
-            .putFloat("customHighHz", p.customHighHz)
             .putString("listen", p.listen.name)
             .putBoolean("shelfEnabled", p.shelfEnabled)
             .putFloat("shelfFreqHz", p.shelfFreqHz)
             .putFloat("shelfGainDb", p.shelfGainDb)
             .putFloat("outputGainDb", p.outputGainDb)
-            .putString("target", p.target.name)
+            .putString("target", p.applyMode.name)
             .putBoolean("startOnBoot", p.startOnBoot)
             .apply()
+    }
+
+    private fun key(f: Focus, name: String) = "focus_${f.name}_$name"
+
+    private fun loadFocus(f: Focus, d: FocusParams) = FocusParams(
+        enabled = sp.getBoolean(key(f, "enabled"), d.enabled),
+        lowHz = sp.getFloat(key(f, "low"), d.lowHz),
+        highHz = sp.getFloat(key(f, "high"), d.highHz),
+        processing = sp.getFloat(key(f, "processing"), d.processing),
+        intensity = sp.getFloat(key(f, "intensity"), d.intensity),
+    )
+
+    private fun saveFocus(e: SharedPreferences.Editor, f: Focus, fp: FocusParams) {
+        e.putBoolean(key(f, "enabled"), fp.enabled)
+            .putFloat(key(f, "low"), fp.lowHz)
+            .putFloat(key(f, "high"), fp.highHz)
+            .putFloat(key(f, "processing"), fp.processing)
+            .putFloat(key(f, "intensity"), fp.intensity)
     }
 
     private inline fun <reified E : Enum<E>> enumOr(name: String?, fallback: E): E =

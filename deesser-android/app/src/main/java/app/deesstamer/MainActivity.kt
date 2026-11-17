@@ -9,14 +9,15 @@ import android.media.audiofx.AudioEffect
 import android.os.Bundle
 import android.view.View
 import android.view.WindowInsets
+import android.widget.Button
+import android.widget.RadioButton
 import android.widget.RadioGroup
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
 import app.deesstamer.ui.BandView
 import app.deesstamer.ui.CurveView
+import app.deesstamer.ui.FocusColors
 import app.deesstamer.ui.KnobView
 import kotlin.math.ln
 import kotlin.math.pow
@@ -28,20 +29,22 @@ class MainActivity : Activity() {
     private lateinit var warning: TextView
     private lateinit var curve: CurveView
     private lateinit var band: BandView
-    private lateinit var rangeGroup: RadioGroup
-    private lateinit var customRow: LinearLayout
-    private lateinit var customLow: KnobView
-    private lateinit var customHigh: KnobView
+    private lateinit var focusGroup: RadioGroup
+    private lateinit var focusButtons: Map<Focus, RadioButton>
+    private lateinit var focusEnabled: Switch
+    private lateinit var focusLow: KnobView
+    private lateinit var focusHigh: KnobView
     private lateinit var processing: KnobView
     private lateinit var intensity: KnobView
+    private lateinit var focusHint: TextView
+    private lateinit var listenGroup: RadioGroup
     private lateinit var sharpness: KnobView
     private lateinit var mix: KnobView
-    private lateinit var listenGroup: RadioGroup
+    private lateinit var outputGain: KnobView
     private lateinit var shelfSwitch: Switch
     private lateinit var shelfFreq: KnobView
     private lateinit var shelfGain: KnobView
-    private lateinit var outputGain: KnobView
-    private lateinit var targetGroup: RadioGroup
+    private lateinit var applyGroup: RadioGroup
     private lateinit var bootSwitch: Switch
     private lateinit var sessions: TextView
 
@@ -50,6 +53,22 @@ class MainActivity : Activity() {
     private val stateListener: () -> Unit = { render() }
 
     private val supported by lazy { EffectEngine.isSupported() }
+
+    private fun focusName(f: Focus) = getString(
+        when (f) {
+            Focus.GUITAR -> R.string.focus_guitar
+            Focus.VOCAL -> R.string.focus_vocal
+            Focus.HIHAT -> R.string.focus_hihat
+        },
+    )
+
+    private fun focusHintText(f: Focus) = getString(
+        when (f) {
+            Focus.GUITAR -> R.string.focus_hint_guitar
+            Focus.VOCAL -> R.string.focus_hint_vocal
+            Focus.HIHAT -> R.string.focus_hint_hihat
+        },
+    )
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,44 +81,60 @@ class MainActivity : Activity() {
         warning = findViewById(R.id.warning)
         curve = findViewById(R.id.curve)
         band = findViewById(R.id.band)
-        rangeGroup = findViewById(R.id.rangeGroup)
-        customRow = findViewById(R.id.customRow)
-        customLow = findViewById(R.id.customLow)
-        customHigh = findViewById(R.id.customHigh)
+        focusGroup = findViewById(R.id.focusGroup)
+        focusButtons = mapOf(
+            Focus.GUITAR to findViewById(R.id.focusGuitar),
+            Focus.VOCAL to findViewById(R.id.focusVocal),
+            Focus.HIHAT to findViewById(R.id.focusHihat),
+        )
+        focusEnabled = findViewById(R.id.focusEnabled)
+        focusLow = findViewById(R.id.focusLow)
+        focusHigh = findViewById(R.id.focusHigh)
         processing = findViewById(R.id.processing)
         intensity = findViewById(R.id.intensity)
+        focusHint = findViewById(R.id.focusHint)
+        listenGroup = findViewById(R.id.listenGroup)
         sharpness = findViewById(R.id.sharpness)
         mix = findViewById(R.id.mix)
-        listenGroup = findViewById(R.id.listenGroup)
+        outputGain = findViewById(R.id.outputGain)
         shelfSwitch = findViewById(R.id.shelfSwitch)
         shelfFreq = findViewById(R.id.shelfFreq)
         shelfGain = findViewById(R.id.shelfGain)
-        outputGain = findViewById(R.id.outputGain)
-        targetGroup = findViewById(R.id.targetGroup)
+        applyGroup = findViewById(R.id.applyGroup)
         bootSwitch = findViewById(R.id.bootSwitch)
         sessions = findViewById(R.id.sessions)
 
+        band.labels = Focus.entries.associateWith { focusName(it) }
+        curve.axisLabel = getString(R.string.curve_axis)
+
+        // Per-target knobs edit whichever target is selected.
+        freqKnob(focusLow, R.string.knob_low, Focus.VOCAL.defaultLowHz) { p, v ->
+            p.updateFocus(p.selected) { it.copy(lowHz = v) }
+        }
+        freqKnob(focusHigh, R.string.knob_high, Focus.VOCAL.defaultHighHz) { p, v ->
+            p.updateFocus(p.selected) { it.copy(highHz = v) }
+        }
+        percentKnob(processing, R.string.knob_processing, 50f) { p, v ->
+            p.updateFocus(p.selected) { it.copy(processing = v) }
+        }
+        percentKnob(intensity, R.string.knob_intensity, 50f) { p, v ->
+            p.updateFocus(p.selected) { it.copy(intensity = v) }
+        }
+
         val d = DeEsserParams()
-        percentKnob(processing, R.string.knob_processing, d.processing) { p, v -> p.copy(processing = v) }
-        percentKnob(intensity, R.string.knob_intensity, d.intensity) { p, v -> p.copy(intensity = v) }
         percentKnob(sharpness, R.string.knob_sharpness, d.sharpness) { p, v -> p.copy(sharpness = v) }
         percentKnob(mix, R.string.knob_mix, d.mix) { p, v -> p.copy(mix = v) }
-        freqKnob(customLow, R.string.knob_low, d.customLowHz, 1_000f, 16_000f) { p, v -> p.copy(customLowHz = v) }
-        freqKnob(customHigh, R.string.knob_high, d.customHighHz, 2_000f, 20_000f) { p, v -> p.copy(customHighHz = v) }
+        dbKnob(outputGain, R.string.knob_output, d.outputGainDb, -12f, 6f, 0xFFA0AEC0.toInt()) { p, v -> p.copy(outputGainDb = v) }
         freqKnob(shelfFreq, R.string.knob_shelf_freq, d.shelfFreqHz, 2_000f, 16_000f) { p, v -> p.copy(shelfFreqHz = v) }
-        dbKnob(shelfGain, R.string.knob_shelf_gain, d.shelfGainDb, -18f, 0f, 0xFFF6AD55.toInt()) { p, v -> p.copy(shelfGainDb = v) }
-        dbKnob(outputGain, R.string.knob_output, d.outputGainDb, -12f, 6f, 0xFFB794F4.toInt()) { p, v -> p.copy(outputGainDb = v) }
+        dbKnob(shelfGain, R.string.knob_shelf_gain, d.shelfGainDb, -18f, 0f, 0xFFE2E8F0.toInt()) { p, v -> p.copy(shelfGainDb = v) }
 
-        rangeGroup.setOnCheckedChangeListener { _, id ->
+        focusGroup.setOnCheckedChangeListener { _, id ->
             if (rendering) return@setOnCheckedChangeListener
-            val mode = when (id) {
-                R.id.rangeLowHi -> RangeMode.LOW_HI
-                R.id.rangeMidHi -> RangeMode.MID_HI
-                R.id.rangeHigh -> RangeMode.HIGH
-                R.id.rangeHiEnd -> RangeMode.HI_END
-                else -> RangeMode.CUSTOM
-            }
-            AppState.update { it.copy(range = mode) }
+            val f = focusButtons.entries.firstOrNull { it.value.id == id }?.key ?: return@setOnCheckedChangeListener
+            AppState.update { it.copy(selected = f) }
+        }
+        focusEnabled.setOnCheckedChangeListener { _, on ->
+            if (!rendering) AppState.update { p -> p.updateFocus(p.selected) { it.copy(enabled = on) } }
         }
         listenGroup.setOnCheckedChangeListener { _, id ->
             if (rendering) return@setOnCheckedChangeListener
@@ -108,10 +143,10 @@ class MainActivity : Activity() {
         shelfSwitch.setOnCheckedChangeListener { _, on ->
             if (!rendering) AppState.update { it.copy(shelfEnabled = on) }
         }
-        targetGroup.setOnCheckedChangeListener { _, id ->
+        applyGroup.setOnCheckedChangeListener { _, id ->
             if (rendering) return@setOnCheckedChangeListener
             AppState.update {
-                it.copy(target = if (id == R.id.targetSessions) TargetMode.SESSIONS else TargetMode.GLOBAL)
+                it.copy(applyMode = if (id == R.id.applySessions) ApplyMode.SESSIONS else ApplyMode.GLOBAL)
             }
         }
         bootSwitch.setOnCheckedChangeListener { _, on ->
@@ -197,35 +232,52 @@ class MainActivity : Activity() {
             power.isEnabled = supported
             warning.visibility = if (supported) View.GONE else View.VISIBLE
 
-            curve.params = p
-            band.params = p
+            val sel = p.selected
+            val fp = p.focus(sel)
+            val color = FocusColors.of(sel)
 
-            rangeGroup.check(
-                when (p.range) {
-                    RangeMode.LOW_HI -> R.id.rangeLowHi
-                    RangeMode.MID_HI -> R.id.rangeMidHi
-                    RangeMode.HIGH -> R.id.rangeHigh
-                    RangeMode.HI_END -> R.id.rangeHiEnd
-                    RangeMode.CUSTOM -> R.id.rangeCustom
-                },
+            band.params = p
+            curve.color = color
+            curve.setCurve(
+                thresholdDb = DspMapping.marginDb(fp.processing),
+                ratio = DspMapping.ratio(fp.intensity, p.mix),
+                kneeDb = DspMapping.kneeDb(p.sharpness),
+                enabled = fp.enabled,
             )
-            customRow.visibility = if (p.range == RangeMode.CUSTOM) View.VISIBLE else View.GONE
+
+            for ((f, b) in focusButtons) {
+                b.text = focusName(f) + "\n" + getString(if (p.focus(f).enabled) R.string.focus_on else R.string.focus_off)
+            }
+            focusGroup.check(focusButtons.getValue(sel).id)
+            focusEnabled.text = getString(R.string.focus_enabled, focusName(sel))
+            focusEnabled.isChecked = fp.enabled
+            focusHint.text = focusHintText(sel)
+
+            for (k in listOf(focusLow, focusHigh, processing, intensity)) {
+                k.accentColor = color
+                k.isEnabled = fp.enabled
+            }
+            focusLow.defaultValue = sel.defaultLowHz
+            focusHigh.defaultValue = sel.defaultHighHz
+            processing.defaultValue = FocusParams.defaultFor(sel).processing
+            intensity.defaultValue = FocusParams.defaultFor(sel).intensity
+            focusLow.value = fp.lowHz
+            focusHigh.value = fp.highHz
+            processing.value = fp.processing
+            intensity.value = fp.intensity
+
             listenGroup.check(if (p.listen == ListenMode.FILTER) R.id.listenFilter else R.id.listenNormal)
 
-            processing.value = p.processing
-            intensity.value = p.intensity
             sharpness.value = p.sharpness
             mix.value = p.mix
-            customLow.value = p.customLowHz
-            customHigh.value = p.customHighHz
+            outputGain.value = p.outputGainDb
             shelfFreq.value = p.shelfFreqHz
             shelfGain.value = p.shelfGainDb
-            outputGain.value = p.outputGainDb
             shelfFreq.isEnabled = p.shelfEnabled
             shelfGain.isEnabled = p.shelfEnabled
-
             shelfSwitch.isChecked = p.shelfEnabled
-            targetGroup.check(if (p.target == TargetMode.SESSIONS) R.id.targetSessions else R.id.targetGlobal)
+
+            applyGroup.check(if (p.applyMode == ApplyMode.SESSIONS) R.id.applySessions else R.id.applyGlobal)
             bootSwitch.isChecked = p.startOnBoot
 
             renderStatus(p)
@@ -252,7 +304,7 @@ class MainActivity : Activity() {
         sessions.text = if (!AppState.serviceRunning) {
             getString(R.string.sessions_idle)
         } else buildString {
-            if (p.target == TargetMode.GLOBAL) {
+            if (p.applyMode == ApplyMode.GLOBAL) {
                 append(getString(R.string.sessions_global)).append(": ")
                 val globalErr = engine.errors[AppState.GLOBAL_SESSION]
                 append(
@@ -285,7 +337,8 @@ class MainActivity : Activity() {
     }
 
     private fun freqKnob(
-        k: KnobView, label: Int, def: Float, fMin: Float, fMax: Float,
+        k: KnobView, label: Int, def: Float,
+        fMin: Float = DspMapping.MIN_FREQ_HZ, fMax: Float = DspMapping.MAX_FREQ_HZ,
         set: (DeEsserParams, Float) -> DeEsserParams,
     ) {
         k.label = getString(label)

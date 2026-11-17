@@ -13,7 +13,8 @@ import android.util.Log
  * sessions with ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.
  *
  * Signal chain inside each effect:
- *   pre-EQ (static high shelf) -> 3-band MBC (de-esser) -> post-EQ (listen solo + output gain)
+ *   pre-EQ (static high shelf) -> 12-band MBC (per-target harshness control)
+ *   -> post-EQ (listen solo + output gain)
  */
 class EffectEngine {
 
@@ -115,8 +116,8 @@ class EffectEngine {
 
         private const val CHANNELS = 2
         private const val PRE_EQ_BANDS = 2
-        private const val MBC_BANDS = 3
-        private const val POST_EQ_BANDS = 3
+        private const val MBC_BANDS = DspMapping.MBC_BANDS
+        private const val POST_EQ_BANDS = DspMapping.MBC_BANDS
 
         fun isSupported(): Boolean = runCatching {
             AudioEffect.queryEffects()?.any { it.type == AudioEffect.EFFECT_TYPE_DYNAMICS_PROCESSING } == true
@@ -140,7 +141,7 @@ class EffectEngine {
         /** Static high shelf: flat below [DeEsserParams.shelfFreqHz], fixed cut above it. */
         fun buildPreEq(p: DeEsserParams): DynamicsProcessing.Eq {
             val eq = DynamicsProcessing.Eq(true, true, PRE_EQ_BANDS)
-            val shelfFreq = p.shelfFreqHz.coerceIn(1_000f, DspMapping.TOP_MERGE_HZ)
+            val shelfFreq = p.shelfFreqHz.coerceIn(1_000f, DspMapping.MAX_FREQ_HZ)
             val gain = if (p.shelfEnabled) p.shelfGainDb else 0f
             eq.setBand(0, DynamicsProcessing.EqBand(true, shelfFreq, 0f))
             eq.setBand(1, DynamicsProcessing.EqBand(true, DspMapping.TOP_CUTOFF_HZ, gain))
@@ -148,37 +149,25 @@ class EffectEngine {
         }
 
         fun buildMbc(p: DeEsserParams): DynamicsProcessing.Mbc {
-            val layout = DspMapping.mbcLayout(p)
             val mbc = DynamicsProcessing.Mbc(true, true, MBC_BANDS)
-            val attack = DspMapping.attackMs(p.sharpness)
-            val release = DspMapping.releaseMs(p.sharpness)
-            val ratio = DspMapping.ratio(p.intensity, p.mix)
-            val threshold = DspMapping.thresholdDb(p.processing)
-            val knee = DspMapping.kneeDb(p.sharpness)
-            for (i in 0 until MBC_BANDS) {
-                val band = if (layout.compressed[i]) {
+            DspMapping.bandSettings(p).forEachIndexed { i, b ->
+                // Pass-through bands have ratio 1 and a 0 dBFS threshold.
+                mbc.setBand(
+                    i,
                     DynamicsProcessing.MbcBand(
-                        true, layout.cutoffs[i], attack, release, ratio, threshold, knee,
+                        true, b.cutoffHz, b.attackMs, b.releaseMs, b.ratio, b.thresholdDb, b.kneeDb,
                         -90f, 1f, 0f, 0f,
-                    )
-                } else {
-                    // Pass-through band: ratio 1, threshold at 0 dBFS.
-                    DynamicsProcessing.MbcBand(
-                        true, layout.cutoffs[i], attack, release, 1f, 0f, 0f,
-                        -90f, 1f, 0f, 0f,
-                    )
-                }
-                mbc.setBand(i, band)
+                    ),
+                )
             }
             return mbc
         }
 
         fun buildPostEq(p: DeEsserParams): DynamicsProcessing.Eq {
-            val layout = DspMapping.mbcLayout(p)
             val gains = DspMapping.postEqGains(p)
             val eq = DynamicsProcessing.Eq(true, true, POST_EQ_BANDS)
             for (i in 0 until POST_EQ_BANDS) {
-                eq.setBand(i, DynamicsProcessing.EqBand(true, layout.cutoffs[i], gains[i]))
+                eq.setBand(i, DynamicsProcessing.EqBand(true, DspMapping.MBC_CUTOFFS[i], gains[i]))
             }
             return eq
         }
