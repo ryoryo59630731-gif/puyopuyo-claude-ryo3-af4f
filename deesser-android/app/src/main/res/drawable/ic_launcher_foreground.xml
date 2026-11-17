@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Spectrum bars whose high-frequency side is pulled down by a curve. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FF4FD1C5" android:pathData="M30,56h6v18h-6z" />
+    <path android:fillColor="#FF4FD1C5" android:pathData="M39,44h6v30h-6z" />
+    <path android:fillColor="#FF4FD1C5" android:pathData="M48,36h6v38h-6z" />
+    <path android:fillColor="#FF4FD1C5" android:pathData="M57,42h6v32h-6z" />
+    <path android:fillColor="#FFF6AD55" android:pathData="M66,54h6v20h-6z" />
+    <path android:fillColor="#FFF6AD55" android:pathData="M75,62h6v12h-6z" />
+    <path
+        android:strokeColor="#FFECEFF4"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M28,34 L58,34 C68,34 70,50 82,52" />
+</vector>

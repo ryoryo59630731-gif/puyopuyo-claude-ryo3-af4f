@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DeEss Tamer</string>
+    <string name="power">ON</string>
+
+    <string name="status_off">停止中</string>
+    <string name="status_on">動作中</string>
+    <string name="status_filter">Filter モニター中（検出帯域のみ再生）</string>
+    <string name="status_unsupported">この端末では利用できません</string>
+    <string name="warning_unsupported">この端末には Android 標準の DynamicsProcessing エフェクトが見つかりませんでした。このアプリはそのエフェクトを使って処理するため、この端末では動作しません。</string>
+
+    <string name="section_range">周波数レンジ（検出・抑制する帯域）</string>
+    <string name="range_low_hi">Low-Hi\n1–4k</string>
+    <string name="range_mid_hi">Mid-Hi\n2–4k</string>
+    <string name="range_high">High\n5–10k</string>
+    <string name="range_hi_end">Hi-End\n5–20k</string>
+    <string name="range_custom">Custom\n自由設定</string>
+
+    <string name="section_dynamics">ダイナミクス</string>
+    <string name="knob_processing">PROCESSING</string>
+    <string name="knob_intensity">INTENSITY</string>
+    <string name="knob_sharpness">SHARPNESS</string>
+    <string name="knob_mix">MIX</string>
+    <string name="knob_low">LOW</string>
+    <string name="knob_high">HIGH</string>
+    <string name="hint_knobs">Processing＝しきい値（上げるほど小さな歯擦音にも反応）／Intensity＝抑える強さ（レシオ）／Sharpness＝効き始めの鋭さ（ニー幅と反応速度）／Mix＝効き具合の割合。ノブは上下にドラッグ、ダブルタップで初期値に戻ります。</string>
+
+    <string name="section_listen">モニター</string>
+    <string name="listen_normal">Normal</string>
+    <string name="listen_filter">Filter（検出帯域のみ）</string>
+    <string name="hint_listen">Filter にすると選んだ帯域だけが聞こえます。刺さる音が一番目立つレンジを探すのに使い、決まったら Normal に戻してください。</string>
+
+    <string name="section_tone">高域シェルフ ／ 出力</string>
+    <string name="shelf_switch">高域を常に少し下げる（シェルフ）</string>
+    <string name="knob_shelf_freq">SHELF FREQ</string>
+    <string name="knob_shelf_gain">SHELF GAIN</string>
+    <string name="knob_output">OUTPUT</string>
+
+    <string name="section_targets">適用先</string>
+    <string name="target_global">端末全体\n（グローバル出力）</string>
+    <string name="target_sessions">対応プレーヤーごと\n（セッション）</string>
+    <string name="target_hint">端末全体：すべてのアプリの音にかけます。ただし機種によってはこの方式が無効化されていて効かないことがあります。\n対応プレーヤーごと：再生時にオーディオセッションを通知するプレーヤー（イコライザー連携に対応したアプリ）にだけかけます。プレーヤーの「イコライザー」メニューからこのアプリを選んでも有効になります。\n全体で効かない場合は「対応プレーヤーごと」を試してください。</string>
+    <string name="boot_switch">端末の起動時に自動で開始</string>
+
+    <string name="presets">プリセット</string>
+    <string name="preset_default">標準（初期値）</string>
+    <string name="preset_gentle">やさしく（ボーカルの歯擦音）</string>
+    <string name="preset_strong">しっかり（きつい「サ行」）</string>
+    <string name="preset_cymbals">シンバル・ハイハット（5–20k）</string>
+    <string name="preset_harsh_mids">耳に刺さる中高域（2–4k）</string>
+    <string name="preset_fatigue">長時間リスニング向け（+高域シェルフ）</string>
+
+    <string name="section_status">状態</string>
+    <string name="sessions_idle">停止中です。右上の ON で開始します。</string>
+    <string name="sessions_global">全体（セッション0）</string>
+    <string name="sessions_apps">個別セッション: %1$d 件</string>
+    <string name="sessions_hint">  （対応プレーヤーで再生を始めるとここに表示されます）</string>
+    <string name="sessions_try_per_app">→ この端末ではグローバル出力に付けられませんでした。「対応プレーヤーごと」を試してください。</string>
+    <string name="state_active">適用中</string>
+    <string name="state_disabled">オフ</string>
+    <string name="state_no_control">[他アプリが制御中]</string>
+    <string name="state_failed">失敗 (%1$s)</string>
+
+    <string name="notes">メモ：このアプリは Android 標準の DynamicsProcessing（マルチバンド・コンプレッサー）で、選んだ帯域が大きくなった瞬間だけその帯域を下げる「スプリットバンド方式のディエッサー」を実現しています。DynamicsProcessing にドライ／ウェットを混ぜる機能がないため、Mix はリダクション量を縮める近似です。同じ種類のエフェクトを使う他のイコライザーアプリ（例：Wavelet など）とは同時に使わないでください（設定を奪い合います）。メーカー独自の音響効果や再生経路によっては効かない場合があります。</string>
+
+    <string name="notif_channel">エフェクト動作中</string>
+    <string name="notif_title">DeEss Tamer 動作中</string>
+    <string name="notif_global_on">端末全体に適用中</string>
+    <string name="notif_global_failed">端末全体への適用に失敗（アプリを開いて確認）</string>
+    <string name="notif_sessions">プレーヤー %1$d 件に適用中</string>
+    <string name="notif_stop">停止</string>
+</resources>

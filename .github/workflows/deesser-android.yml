@@ -1,0 +1,32 @@
+name: DeEss Tamer (Android)
+
+on:
+  push:
+    paths:
+      - "deesser-android/**"
+      - ".github/workflows/deesser-android.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deesser-android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests and release APK
+        run: ./gradlew --no-daemon testDebugUnitTest assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeEssTamer-apk
+          path: deesser-android/app/build/outputs/apk/release/app-release.apk

@@ -1,0 +1,301 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg"
+    android:clipToPadding="false"
+    android:fillViewport="true"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/app_name"
+                    android:textColor="@color/text"
+                    android:textSize="22sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/status"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:textColor="@color/text_dim"
+                    android:textSize="13sp" />
+            </LinearLayout>
+
+            <Switch
+                android:id="@+id/power"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:text="@string/power"
+                android:textColor="@color/text"
+                android:switchPadding="8dp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/warning"
+            style="@style/Panel"
+            android:layout_marginTop="12dp"
+            android:text="@string/warning_unsupported"
+            android:textColor="@color/warn"
+            android:visibility="gone" />
+
+        <!-- Graphs -->
+        <app.deesstamer.ui.CurveView
+            android:id="@+id/curve"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" />
+
+        <app.deesstamer.ui.BandView
+            android:id="@+id/band"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" />
+
+        <!-- Frequency range -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_range" />
+
+        <RadioGroup
+            android:id="@+id/rangeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/rangeLowHi"
+                style="@style/Segment"
+                android:text="@string/range_low_hi" />
+
+            <RadioButton
+                android:id="@+id/rangeMidHi"
+                style="@style/Segment"
+                android:text="@string/range_mid_hi" />
+
+            <RadioButton
+                android:id="@+id/rangeHigh"
+                style="@style/Segment"
+                android:text="@string/range_high" />
+
+            <RadioButton
+                android:id="@+id/rangeHiEnd"
+                style="@style/Segment"
+                android:text="@string/range_hi_end" />
+
+            <RadioButton
+                android:id="@+id/rangeCustom"
+                style="@style/Segment"
+                android:text="@string/range_custom" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:id="@+id/customRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:gravity="center"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/customLow"
+                android:layout_width="96dp"
+                android:layout_height="wrap_content" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/customHigh"
+                android:layout_width="96dp"
+                android:layout_height="wrap_content" />
+        </LinearLayout>
+
+        <!-- Main knobs -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_dynamics" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/processing"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/intensity"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/sharpness"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/mix"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
+        </LinearLayout>
+
+        <TextView
+            style="@style/Hint"
+            android:text="@string/hint_knobs" />
+
+        <!-- Listen -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_listen" />
+
+        <RadioGroup
+            android:id="@+id/listenGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <RadioButton
+                android:id="@+id/listenNormal"
+                style="@style/Segment"
+                android:text="@string/listen_normal" />
+
+            <RadioButton
+                android:id="@+id/listenFilter"
+                style="@style/Segment"
+                android:text="@string/listen_filter" />
+        </RadioGroup>
+
+        <TextView
+            style="@style/Hint"
+            android:text="@string/hint_listen" />
+
+        <!-- High shelf + output -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_tone" />
+
+        <LinearLayout
+            style="@style/Panel"
+            android:orientation="vertical">
+
+            <Switch
+                android:id="@+id/shelfSwitch"
+                style="@style/SettingSwitch"
+                android:text="@string/shelf_switch" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/shelfFreq"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/shelfGain"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+
+                <app.deesstamer.ui.KnobView
+                    android:id="@+id/outputGain"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Targets -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_targets" />
+
+        <LinearLayout
+            style="@style/Panel"
+            android:orientation="vertical">
+
+            <RadioGroup
+                android:id="@+id/targetGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/targetGlobal"
+                    style="@style/Segment"
+                    android:text="@string/target_global" />
+
+                <RadioButton
+                    android:id="@+id/targetSessions"
+                    style="@style/Segment"
+                    android:text="@string/target_sessions" />
+            </RadioGroup>
+
+            <TextView
+                style="@style/Hint"
+                android:text="@string/target_hint" />
+
+            <Switch
+                android:id="@+id/bootSwitch"
+                style="@style/SettingSwitch"
+                android:layout_marginTop="8dp"
+                android:text="@string/boot_switch" />
+        </LinearLayout>
+
+        <Button
+            android:id="@+id/presetButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:minHeight="48dp"
+            android:text="@string/presets" />
+
+        <!-- Status details -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_status" />
+
+        <TextView
+            android:id="@+id/sessions"
+            style="@style/Panel"
+            android:fontFamily="monospace"
+            android:textColor="@color/text"
+            android:textSize="12sp" />
+
+        <TextView
+            style="@style/Hint"
+            android:layout_marginTop="16dp"
+            android:text="@string/notes" />
+    </LinearLayout>
+</ScrollView>
