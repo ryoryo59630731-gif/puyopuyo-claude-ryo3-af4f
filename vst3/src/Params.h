@@ -1,0 +1,149 @@
+#pragma once
+
+#include "dsp/Mapping.h"
+
+#include <juce_audio_processors/juce_audio_processors.h>
+
+// Parameter IDs, ranges and the conversion from host parameters to engine Settings.
+// Parameter names are ASCII so every host can display them; the editor is in Japanese.
+
+namespace sasari::params
+{
+
+inline const char* focusKey (int f)
+{
+    static const char* keys[] = { "guitar", "vocal", "hihat" };
+    return keys[f];
+}
+inline const char* focusLabel (int f)
+{
+    static const char* labels[] = { "Guitar", "Vocal S", "Hi-hat" };
+    return labels[f];
+}
+
+inline juce::String id (int f, const char* what) { return juce::String (focusKey (f)) + "_" + what; }
+
+inline const juce::String selected { "selected" }, sharpness { "sharpness" }, mix { "mix" }, range { "range" },
+    output { "output" }, resolution { "resolution" }, autoLevel { "auto" }, listen { "listen" },
+    channels { "channels" }, shelfOn { "shelf_on" }, shelfFreq { "shelf_freq" }, shelfGain { "shelf_gain" };
+
+inline juce::NormalisableRange<float> logRange (float lo, float hi)
+{
+    return { lo, hi,
+             [] (float s, float e, float t) { return s * std::pow (e / s, t); },
+             [] (float s, float e, float v) { return std::log (v / s) / std::log (e / s); },
+             [] (float s, float e, float v) { return juce::jlimit (s, e, v); } };
+}
+
+inline juce::String hzText (float v, int)
+{
+    return v >= 1000.0f ? juce::String (v / 1000.0f, v >= 10000.0f ? 1 : 2) + " kHz" : juce::String ((int) v) + " Hz";
+}
+
+inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
+{
+    using namespace juce;
+    AudioProcessorValueTreeState::ParameterLayout layout;
+    const Settings d;
+    auto pctAttr = AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction (
+        [] (float v, int) { return String (v, 0) + " %"; });
+    auto dbAttr = AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction (
+        [] (float v, int) { return String (v, 1) + " dB"; });
+    auto hzAttr = AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText);
+
+    for (int f = 0; f < kNumFocus; ++f)
+    {
+        const auto& fs = d.focus[(size_t) f];
+        const String name (focusLabel (f));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { id (f, "on"), 1 }, name + " On", fs.enabled));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "low"), 1 }, name + " Low",
+                                                           logRange (kMinFreqHz, kMaxFreqHz), fs.lowHz, hzAttr));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "high"), 1 }, name + " High",
+                                                           logRange (kMinFreqHz, kMaxFreqHz), fs.highHz, hzAttr));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "proc"), 1 }, name + " Processing",
+                                                           NormalisableRange<float> (0.0f, 100.0f), fs.processing, pctAttr));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "int"), 1 }, name + " Intensity",
+                                                           NormalisableRange<float> (0.0f, 100.0f), fs.intensity, pctAttr));
+    }
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { selected, 1 }, "Edit Target",
+                                                        StringArray { "Guitar", "Vocal S", "Hi-hat" }, d.selected));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { sharpness, 1 }, "Sharpness",
+                                                       NormalisableRange<float> (0.0f, 100.0f), d.sharpness, pctAttr));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { mix, 1 }, "Mix",
+                                                       NormalisableRange<float> (0.0f, 100.0f), d.mix, pctAttr));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { range, 1 }, "Range",
+                                                       NormalisableRange<float> (0.0f, 24.0f, 0.5f), d.rangeDb, dbAttr));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { output, 1 }, "Output",
+                                                       NormalisableRange<float> (-12.0f, 6.0f, 0.1f), d.outputDb, dbAttr));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { resolution, 1 }, "Resolution",
+                                                        StringArray { "1/3 oct", "1/6 oct" }, 0));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { autoLevel, 1 }, "Auto Level", d.autoLevel));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { listen, 1 }, "Listen",
+                                                        StringArray { "Normal", "Filter", "Delta" }, 0));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { channels, 1 }, "Channels",
+                                                        StringArray { "Stereo", "Mid", "Side" }, 0));
+    layout.add (std::make_unique<AudioParameterBool> (ParameterID { shelfOn, 1 }, "Shelf On", d.shelfOn));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { shelfFreq, 1 }, "Shelf Freq",
+                                                       logRange (2000.0f, 16000.0f), d.shelfHz, hzAttr));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { shelfGain, 1 }, "Shelf Gain",
+                                                       NormalisableRange<float> (-18.0f, 0.0f, 0.1f), d.shelfDb, dbAttr));
+    return layout;
+}
+
+/** Cached raw parameter pointers for lock-free reads on the audio thread. */
+struct Raw
+{
+    std::array<std::array<std::atomic<float>*, 5>, kNumFocus> focus {};
+    std::atomic<float>*sel {}, *sharp {}, *mixP {}, *rangeP {}, *out {}, *res {}, *autoP {}, *listenP {}, *chans {},
+        *shelfOnP {}, *shelfHz {}, *shelfDb {};
+
+    explicit Raw (juce::AudioProcessorValueTreeState& s)
+    {
+        static const char* what[] = { "on", "low", "high", "proc", "int" };
+        for (int f = 0; f < kNumFocus; ++f)
+            for (int w = 0; w < 5; ++w)
+                focus[(size_t) f][(size_t) w] = s.getRawParameterValue (id (f, what[w]));
+        sel = s.getRawParameterValue (selected);
+        sharp = s.getRawParameterValue (sharpness);
+        mixP = s.getRawParameterValue (mix);
+        rangeP = s.getRawParameterValue (range);
+        out = s.getRawParameterValue (output);
+        res = s.getRawParameterValue (resolution);
+        autoP = s.getRawParameterValue (autoLevel);
+        listenP = s.getRawParameterValue (listen);
+        chans = s.getRawParameterValue (channels);
+        shelfOnP = s.getRawParameterValue (shelfOn);
+        shelfHz = s.getRawParameterValue (shelfFreq);
+        shelfDb = s.getRawParameterValue (shelfGain);
+    }
+
+    Settings read() const
+    {
+        Settings s;
+        for (int f = 0; f < kNumFocus; ++f)
+        {
+            auto& fs = s.focus[(size_t) f];
+            const auto& p = focus[(size_t) f];
+            fs.enabled = p[0]->load() > 0.5f;
+            fs.lowHz = p[1]->load();
+            fs.highHz = p[2]->load();
+            fs.processing = p[3]->load();
+            fs.intensity = p[4]->load();
+        }
+        s.selected = juce::jlimit (0, kNumFocus - 1, (int) sel->load());
+        s.sharpness = sharp->load();
+        s.mix = mixP->load();
+        s.rangeDb = rangeP->load();
+        s.outputDb = out->load();
+        s.bandsPerOctave = res->load() > 0.5f ? 6 : 3;
+        s.autoLevel = autoP->load() > 0.5f;
+        s.listen = (Listen) juce::jlimit (0, 2, (int) listenP->load());
+        s.channels = (ChannelMode) juce::jlimit (0, 2, (int) chans->load());
+        s.shelfOn = shelfOnP->load() > 0.5f;
+        s.shelfHz = shelfHz->load();
+        s.shelfDb = shelfDb->load();
+        return s;
+    }
+};
+
+} // namespace sasari::params

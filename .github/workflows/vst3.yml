@@ -1,0 +1,76 @@
+name: VST3 (SasariOsaeru)
+
+on:
+  push:
+    paths:
+      - "vst3/**"
+      - ".github/workflows/vst3.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+            pluginval: pluginval_Windows.zip
+            pluginval_bin: ./pluginval.exe
+          - os: macos-latest
+            label: macOS
+            pluginval: pluginval_macOS.zip
+            pluginval_bin: ./pluginval.app/Contents/MacOS/pluginval
+          - os: ubuntu-24.04
+            label: Linux
+            pluginval: pluginval_Linux.zip
+            pluginval_bin: ./pluginval
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxext-dev libxcomposite-dev libfreetype-dev libfontconfig1-dev xvfb
+
+      - name: Configure (macOS universal)
+        if: runner.os == 'macOS'
+        run: cmake -S vst3 -B build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+
+      - name: Configure
+        if: runner.os != 'macOS'
+        run: cmake -S vst3 -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Unit and host tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: pluginval (strictness 5)
+        shell: bash
+        run: |
+          curl -sSL -o pv.zip "https://github.com/Tracktion/pluginval/releases/download/v1.0.4/${{ matrix.pluginval }}"
+          unzip -q pv.zip
+          PLUGIN="build/SasariOsaeru_artefacts/Release/VST3/SasariOsaeru.vst3"
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            xvfb-run -a ${{ matrix.pluginval_bin }} --strictness-level 5 --validate-in-process --validate "$PLUGIN"
+          else
+            ${{ matrix.pluginval_bin }} --strictness-level 5 --validate-in-process --validate "$PLUGIN"
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp -R build/SasariOsaeru_artefacts/Release/VST3/SasariOsaeru.vst3 dist/
+          cp vst3/README.md dist/README.md
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SasariOsaeru-VST3-${{ matrix.label }}
+          path: dist
