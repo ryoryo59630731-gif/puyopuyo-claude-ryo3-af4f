@@ -56,11 +56,9 @@ class DeEsserService : Service() {
             addAction(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION)
             addAction(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION)
         }
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(sessionReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            registerReceiver(sessionReceiver, filter)
-        }
+        // Players are other apps, so the receiver must be exported (flag honoured from API 33,
+        // harmless before; the 3-argument overload exists since API 26).
+        registerReceiver(sessionReceiver, filter, Context.RECEIVER_EXPORTED)
 
         AppState.serviceRunning = true
         AppState.syncTargets()

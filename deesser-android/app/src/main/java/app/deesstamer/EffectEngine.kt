@@ -177,7 +177,10 @@ class EffectEngine {
 
         fun buildConfig(p: DeEsserParams, settings: List<DspMapping.BandSetting>): DynamicsProcessing.Config =
             DynamicsProcessing.Config.Builder(
-                DynamicsProcessing.VARIANT_FAVOR_TIME_RESOLUTION,
+                // The AOSP implementation only accepts the frequency-resolution variant
+                // ("variant 1 not available for creation" on Android 11); timing is set by
+                // the preferred frame duration below.
+                DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
                 CHANNELS,
                 true, PRE_EQ_BANDS,
                 true, settings.size,

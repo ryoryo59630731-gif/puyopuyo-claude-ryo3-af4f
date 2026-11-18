@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">DeEss Tamer</string>
+    <string name="app_name">刺さりを抑えるソフト</string>
     <string name="power">ON</string>
 
     <string name="status_off">停止中</string>
@@ -85,7 +85,7 @@
     <string name="notes">メモ：このアプリは Android 標準の DynamicsProcessing（マルチバンド・コンプレッサー）で、細かく分けた帯域ごとに「突出した瞬間だけ」下げる処理をしています。基準となる「普段のレベル」は、オートがオフのときは一般的な音楽の周波数バランスから決めた固定値なので、曲や端末の音量によって効き方が変わる場合があります（オートをオンにすると再生中の音に追従します）。DynamicsProcessing にドライ／ウェットを混ぜる機能がないため、Mix はリダクション量を縮める近似です。同じ種類のエフェクトを使う他のイコライザーアプリ（例：Wavelet など）とは同時に使わないでください（設定を奪い合います）。メーカー独自の音響効果や再生経路によっては効かない場合があります。</string>
 
     <string name="notif_channel">エフェクト動作中</string>
-    <string name="notif_title">DeEss Tamer 動作中</string>
+    <string name="notif_title">刺さりを抑えるソフト 動作中</string>
     <string name="notif_global_on">端末全体に適用中</string>
     <string name="notif_global_failed">端末全体への適用に失敗（アプリを開いて確認）</string>
     <string name="notif_sessions">プレーヤー %1$d 件に適用中</string>
