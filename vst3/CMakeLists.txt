@@ -1,12 +1,14 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(SasariOsaeru VERSION 1.0.0 LANGUAGES C CXX)
+project(SasariOsaeru VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 if(APPLE)
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "")
 endif()
+# Windows: link the C++ runtime statically so no Visual C++ Redistributable is needed (SPEC 3).
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 option(SASARI_BUILD_TESTS "Build the DSP unit tests and the plugin host test" ON)
 
@@ -70,6 +72,7 @@ if(SASARI_BUILD_TESTS)
     target_sources(PluginHostTest PRIVATE tests/PluginHostTest.cpp)
     target_compile_definitions(PluginHostTest PRIVATE
         JUCE_PLUGINHOST_VST3=1
+        JUCE_MODAL_LOOPS_PERMITTED=1
         JUCE_WEB_BROWSER=0
         JUCE_USE_CURL=0)
     target_link_libraries(PluginHostTest PRIVATE
@@ -78,4 +81,24 @@ if(SASARI_BUILD_TESTS)
     add_dependencies(PluginHostTest SasariOsaeru_VST3)
     get_target_property(SASARI_VST3_BUNDLE SasariOsaeru_VST3 JUCE_PLUGIN_ARTEFACT_FILE)
     add_test(NAME PluginHostTest COMMAND PluginHostTest "${SASARI_VST3_BUNDLE}")
+
+    # Processor-level tests: compiles the plugin's own classes into a test app (no hosting).
+    juce_add_console_app(ProcessorTests PRODUCT_NAME "ProcessorTests")
+    target_sources(ProcessorTests PRIVATE
+        tests/ProcessorTests.cpp
+        src/PluginProcessor.cpp
+        src/PluginEditor.cpp
+        src/dsp/Engine.cpp)
+    target_compile_definitions(ProcessorTests PRIVATE
+        JucePlugin_Name="SasariOsaeru"
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0)
+    target_link_libraries(ProcessorTests PRIVATE
+        juce::juce_audio_utils
+        juce::juce_recommended_config_flags)
+    if(MSVC)
+        target_compile_options(ProcessorTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME ProcessorTests COMMAND ProcessorTests)
 endif()

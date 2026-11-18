@@ -9,7 +9,7 @@ juce::String jp (const char* utf8) { return juce::String::fromUTF8 (utf8); }
 
 const char* targetName (int f)
 {
-    static const char* n[] = { "歪みギター", "さ行", "ハイハット" };
+    static const char* n[] = { "歪みギター", "さ行", "ハイハット", "カスタム" };
     return n[f];
 }
 
@@ -19,11 +19,27 @@ const char* targetHintText (int f)
         "歪んだギターの「ジャリジャリ・チリチリ」。持続する音なので、ゆっくり反応して滑らかに下げます（目安 2〜6 kHz）。",
         "ボーカルの「サ・シ・ス・セ・ソ」「ツ」。一瞬で出て消えるので素早く反応します（女性 5.5〜11 kHz、男性 4〜8 kHz が目安）。",
         "ハイハット・シンバルの「チッ」「シャーン」。素早く反応します（目安 8〜16 kHz）。",
+        "自由に帯域と反応速度（ATTACK / RELEASE）を決められます。初期値は鼻にかかった声（600〜1200 Hz）。1.6 kHz より下を使うときは「解析範囲」を 400 Hz〜 にしてください。",
     };
     return h[f];
 }
 
-constexpr float kFMin = 1000.0f, kFMax = 20000.0f;
+void drawFreqGrid (juce::Graphics& g, juce::Rectangle<float> r, bool labels)
+{
+    g.setFont (juce::FontOptions (10.0f));
+    for (auto [f, label] : { std::pair { 100.0f, "100" }, { 200.0f, "200" }, { 500.0f, "500" }, { 1000.0f, "1k" },
+                             { 2000.0f, "2k" }, { 5000.0f, "5k" }, { 10000.0f, "10k" }, { 20000.0f, "20k" } })
+    {
+        const float x = FreqAxis::x (f, r.getX(), r.getRight());
+        g.setColour (juce::Colour (Colours::stroke));
+        g.drawVerticalLine ((int) x, r.getY(), r.getBottom());
+        if (labels)
+        {
+            g.setColour (juce::Colour (Colours::dim));
+            g.drawText (label, juce::Rectangle<float> (x - 15, r.getBottom() + 1, 30, 12), juce::Justification::centred);
+        }
+    }
+}
 } // namespace
 
 // ============================================================================ LookAndFeel
@@ -41,6 +57,7 @@ LookAndFeel::LookAndFeel()
     setColour (juce::Label::textColourId, juce::Colour (Colours::text));
     setColour (juce::ToggleButton::textColourId, juce::Colour (Colours::text));
     setColour (juce::ToggleButton::tickColourId, juce::Colour (Colours::accent));
+    setColour (juce::TextButton::buttonOnColourId, juce::Colour (Colours::accent));
 }
 
 void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float start, float end,
@@ -78,15 +95,15 @@ void LookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int 
 void LookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool over, bool)
 {
     auto r = b.getLocalBounds().toFloat().reduced (1.5f);
-    const auto on = b.findColour (juce::TextButton::buttonOnColourId);
+    const float alpha = b.isEnabled() ? 1.0f : 0.4f;
     if (b.getToggleState())
     {
-        g.setColour (on);
+        g.setColour (b.findColour (juce::TextButton::buttonOnColourId).withAlpha (alpha));
         g.fillRoundedRectangle (r, 7.0f);
     }
     else
     {
-        g.setColour (juce::Colour (Colours::panel).brighter (over ? 0.08f : 0.0f));
+        g.setColour (juce::Colour (Colours::panel).brighter (over ? 0.08f : 0.0f).withAlpha (alpha));
         g.fillRoundedRectangle (r, 7.0f);
         g.setColour (juce::Colour (Colours::stroke));
         g.drawRoundedRectangle (r, 7.0f, 1.0f);
@@ -95,7 +112,7 @@ void LookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, cons
 
 void LookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b, bool, bool)
 {
-    g.setColour (b.getToggleState() ? juce::Colour (0xFF0B1A19) : juce::Colour (Colours::text));
+    g.setColour ((b.getToggleState() ? juce::Colour (0xFF0B1A19) : juce::Colour (Colours::text)).withAlpha (b.isEnabled() ? 1.0f : 0.4f));
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
     g.drawFittedText (b.getButtonText(), b.getLocalBounds().reduced (4, 2), juce::Justification::centred, 2);
 }
@@ -156,117 +173,224 @@ void Knob::paint (juce::Graphics& g)
     g.drawText (name, r, juce::Justification::centred);
 }
 
-// ============================================================================ BandDisplay
+// ============================================================================ SpectrumDisplay
 
-void BandDisplay::tick()
+void SpectrumDisplay::tick()
 {
     auto& m = proc.engine.meters;
-    bands = m.numBands.load();
-    for (int b = 0; b < kMaxBands; ++b)
+    for (int i = 0; i < Engine::kSpecPoints; ++i)
     {
-        over[(size_t) b] = m.overDb[(size_t) b].load();
-        gr[(size_t) b] = m.grDb[(size_t) b].load();
-        grPeak[(size_t) b] = juce::jmax (gr[(size_t) b], grPeak[(size_t) b] - 0.6f); // slow fall for readability
+        // Fast rise, slow fall, for a readable analyser.
+        const float a = m.specIn[(size_t) i].load(), b = m.specOut[(size_t) i].load();
+        in[(size_t) i] = a > in[(size_t) i] ? a : juce::jmax (a, in[(size_t) i] - 1.2f);
+        out[(size_t) i] = b > out[(size_t) i] ? b : juce::jmax (b, out[(size_t) i] - 1.2f);
     }
     repaint();
 }
 
-void BandDisplay::paint (juce::Graphics& g)
+void SpectrumDisplay::paint (juce::Graphics& g)
 {
     const auto s = proc.currentSettings();
-    const Layout layout (s.bandsPerOctave);
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
     const auto plan = makePlan (s, layout);
 
     auto area = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xFF171B22));
+    g.setColour (juce::Colour (Colours::display));
     g.fillRoundedRectangle (area, 6.0f);
-    const float left = area.getX() + 10, right = area.getRight() - 10;
-    const float top = area.getY() + 26, bottom = area.getBottom() - 18;
-    auto x = [&] (float f) { return left + std::log (f / kFMin) / std::log (kFMax / kFMin) * (right - left); };
-    // Bars: -12 dB .. +18 dB relative to the band's usual level. GR hangs from the top (0..24 dB).
-    auto y = [&] (float db) { return bottom - juce::jlimit (0.0f, 1.0f, (db + 12.0f) / 30.0f) * (bottom - top); };
+    const auto r = juce::Rectangle<float>::leftTopRightBottom (area.getX() + 10, area.getY() + 22, area.getRight() - 10,
+                                                               area.getBottom() - 14);
+    auto x = [&] (float f) { return FreqAxis::x (f, r.getX(), r.getRight()); };
+    auto y = [&] (float db) { return r.getY() + juce::jlimit (0.0f, 1.0f, -db / 90.0f) * r.getHeight(); };
 
-    g.setFont (juce::FontOptions (10.0f));
-    for (auto [f, label] : { std::pair { 1000.0f, "1k" }, { 2000.0f, "2k" }, { 5000.0f, "5k" }, { 10000.0f, "10k" }, { 20000.0f, "20k" } })
-    {
-        g.setColour (juce::Colour (Colours::stroke));
-        g.drawVerticalLine ((int) x (f), top, bottom);
-        g.setColour (juce::Colour (Colours::dim));
-        g.drawText (label, juce::Rectangle<float> (x (f) - 15, bottom + 2, 30, 14), juce::Justification::centred);
-    }
+    // Region the engine does not analyse.
+    g.setColour (juce::Colour (0x66000000));
+    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (r.getX(), r.getY(), x (layout.lowLimit()), r.getBottom()));
+    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.highLimit()), r.getY(), r.getRight(), r.getBottom()));
 
     for (int b = 0; b < layout.numBands; ++b)
-    {
-        const float l = x (layout.low (b)) + 1.0f, r = x (layout.high (b)) - 1.0f;
-        const int owner = plan[(size_t) b].owner;
-        g.setColour (owner >= 0 ? Colours::focus (owner).withAlpha (0.22f) : juce::Colour (0xFF2E3440));
-        g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l, top, r, bottom));
-
-        if (b < bands)
+        if (plan[(size_t) b].owner >= 0)
         {
-            const float v = over[(size_t) b];
-            if (v > -90.0f)
-            {
-                const bool above = owner >= 0 && v >= plan[(size_t) b].marginDb;
-                g.setColour (above ? Colours::focus (owner) : juce::Colour (Colours::dim).withAlpha (0.55f));
-                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l + 2, y (v), r - 2, bottom));
-            }
-            const float grh = juce::jlimit (0.0f, 1.0f, grPeak[(size_t) b] / 24.0f) * (bottom - top);
-            if (grh > 0.5f)
-            {
-                g.setColour (juce::Colour (Colours::red).withAlpha (0.85f));
-                g.fillRect (juce::Rectangle<float> (l + 2, top, r - l - 4, grh));
-            }
+            g.setColour (Colours::focus (plan[(size_t) b].owner).withAlpha (0.13f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.low (b)) + 0.5f, r.getY(), x (layout.high (b)) - 0.5f, r.getBottom()));
         }
-        if (owner >= 0)
+    drawFreqGrid (g, r, true);
+    g.setColour (juce::Colour (Colours::stroke).withAlpha (0.6f));
+    for (float db : { -20.0f, -40.0f, -60.0f, -80.0f })
+        g.drawHorizontalLine ((int) y (db), r.getX(), r.getRight());
+
+    // Spectra (input grey, output white) and the cut between them (red).
+    const int np = Engine::kSpecPoints;
+    auto px = [&] (int i) {
+        return x (Engine::kSpecLowHz * std::pow (Engine::kSpecHighHz / Engine::kSpecLowHz, ((float) i + 0.5f) / (float) np));
+    };
+    for (int i = 0; i < np; ++i)
+    {
+        const float d = in[(size_t) i] - out[(size_t) i];
+        if (d > 0.5f && in[(size_t) i] > -90.0f)
         {
-            g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.drawHorizontalLine ((int) y (plan[(size_t) b].marginDb), l, r);
+            g.setColour (juce::Colour (Colours::red).withAlpha (juce::jlimit (0.25f, 0.85f, d / 12.0f)));
+            const float w = (r.getWidth() / (float) np) * 0.9f;
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (px (i) - w / 2, y (in[(size_t) i]), px (i) + w / 2, y (out[(size_t) i])));
         }
     }
+    juce::Path pin, pout;
+    for (int i = 0; i < np; ++i)
+    {
+        const juce::Point<float> a (px (i), y (in[(size_t) i])), b (px (i), y (out[(size_t) i]));
+        if (i == 0) { pin.startNewSubPath (a); pout.startNewSubPath (b); }
+        else { pin.lineTo (a); pout.lineTo (b); }
+    }
+    g.setColour (juce::Colour (0xFF8C96A6));
+    g.strokePath (pin, juce::PathStrokeType (1.2f));
+    g.setColour (juce::Colours::white.withAlpha (0.9f));
+    g.strokePath (pout, juce::PathStrokeType (1.5f));
 
     // Selected target outline + label.
     std::array<int, kMaxBands> idx {};
     const int sel = s.selected;
-    const int n = coveredBands (s.focus[(size_t) sel], layout, idx);
-    const float l = x (layout.low (idx[0])), r = x (layout.high (idx[(size_t) n - 1]));
+    const auto& sf = s.focus[(size_t) sel];
+    const int n = coveredBands (sf, layout, idx);
+    const float l = x (layout.low (idx[0])), rr = x (layout.high (idx[(size_t) n - 1]));
     if (s.listen == Listen::Filter)
     {
-        g.setColour (juce::Colour (0xB00B0D11));
-        g.fillRect (juce::Rectangle<float>::leftTopRightBottom (left, top, l, bottom));
-        g.fillRect (juce::Rectangle<float>::leftTopRightBottom (r, top, right, bottom));
+        g.setColour (juce::Colour (0x990B0D11));
+        g.fillRect (juce::Rectangle<float>::leftTopRightBottom (r.getX(), r.getY(), l, r.getBottom()));
+        g.fillRect (juce::Rectangle<float>::leftTopRightBottom (rr, r.getY(), r.getRight(), r.getBottom()));
     }
     g.setColour (Colours::focus (sel));
-    g.drawRect (juce::Rectangle<float>::leftTopRightBottom (l, top, r, bottom), 2.0f);
+    if (! outsideLayout (sf, layout))
+        g.drawRect (juce::Rectangle<float>::leftTopRightBottom (l, r.getY(), rr, r.getBottom()), 1.5f);
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    g.drawText (jp (targetName (sel)) + "  " + params::hzText (layout.low (idx[0]), 0) + " - "
-                    + params::hzText (layout.high (idx[(size_t) n - 1]), 0),
-                juce::Rectangle<float> (left, area.getY() + 4, right - left, 18), juce::Justification::centred);
+    g.drawText (jp (targetName (sel)) + "  " + params::hzText (juce::jmin (sf.lowHz, sf.highHz), 0) + " - "
+                    + params::hzText (juce::jmax (sf.lowHz, sf.highHz), 0),
+                juce::Rectangle<float> (area.getX() + 10, area.getY() + 3, 300, 16), juce::Justification::centredLeft);
 
     float maxGr = 0;
-    for (int b = 0; b < bands; ++b)
-        maxGr = juce::jmax (maxGr, gr[(size_t) b]);
-    g.setColour (juce::Colour (Colours::red));
+    for (int b = 0; b < proc.engine.meters.numBands.load(); ++b)
+        maxGr = juce::jmax (maxGr, proc.engine.meters.grDb[(size_t) b].load());
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText (jp ("リダクション ") + juce::String (-maxGr, 1) + " dB",
-                juce::Rectangle<float> (right - 150, area.getY() + 4, 150, 18), juce::Justification::centredRight);
+    g.setColour (juce::Colour (0xFF8C96A6));
+    g.drawText (jp ("灰＝入力  白＝出力  赤＝削った量"), juce::Rectangle<float> (area.getCentreX() - 110, area.getY() + 3, 220, 16), juce::Justification::centred);
+    g.setColour (juce::Colour (Colours::red));
+    g.drawText (jp ("最大リダクション ") + juce::String (-maxGr, 1) + " dB",
+                juce::Rectangle<float> (area.getRight() - 190, area.getY() + 3, 180, 16), juce::Justification::centredRight);
 
     if (s.shelfOn)
     {
-        const float zeroY = top + (bottom - top) * 0.25f;
-        auto gy = [&] (float db) { return zeroY + (-db / 18.0f) * (bottom - zeroY); };
+        const float zeroY = y (-10.0f);
+        auto gy = [&] (float db) { return zeroY - db * 2.0f; };
         juce::Path p;
-        p.startNewSubPath (left, zeroY);
+        p.startNewSubPath (r.getX(), zeroY);
         const float fx = x (s.shelfHz);
         p.lineTo (fx - 12, zeroY);
         p.cubicTo (fx, zeroY, fx, gy (s.shelfDb), fx + 12, gy (s.shelfDb));
-        p.lineTo (right, gy (s.shelfDb));
+        p.lineTo (r.getRight(), gy (s.shelfDb));
         juce::Path dashed;
         const float dashes[] = { 5.0f, 4.0f };
         juce::PathStrokeType (1.5f).createDashedStroke (dashed, p, dashes, 2);
         g.setColour (juce::Colour (0xFFE2E8F0));
         g.fillPath (dashed);
     }
+}
+
+// ============================================================================ ProminenceDisplay
+
+void ProminenceDisplay::tick()
+{
+    for (int b = 0; b < kMaxBands; ++b)
+        over[(size_t) b] = proc.engine.meters.overDb[(size_t) b].load();
+    repaint();
+}
+
+void ProminenceDisplay::paint (juce::Graphics& g)
+{
+    const auto s = proc.currentSettings();
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
+    const auto plan = makePlan (s, layout);
+    auto area = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (Colours::display));
+    g.fillRoundedRectangle (area, 6.0f);
+    const auto r = juce::Rectangle<float>::leftTopRightBottom (area.getX() + 10, area.getY() + 4, area.getRight() - 10, area.getBottom() - 4);
+    auto x = [&] (float f) { return FreqAxis::x (f, r.getX(), r.getRight()); };
+    // -12 dB (bottom) .. +18 dB (top)
+    auto y = [&] (float db) { return r.getBottom() - juce::jlimit (0.0f, 1.0f, (db + 12.0f) / 30.0f) * r.getHeight(); };
+
+    drawFreqGrid (g, r, false);
+    const int nb = juce::jmin (layout.numBands, proc.engine.meters.numBands.load());
+    for (int b = 0; b < nb; ++b)
+    {
+        const float l = x (layout.low (b)) + 1.0f, rr = x (layout.high (b)) - 1.0f;
+        const int owner = plan[(size_t) b].owner;
+        const float v = over[(size_t) b];
+        if (v > -90.0f)
+        {
+            const bool above = owner >= 0 && v >= plan[(size_t) b].marginDb;
+            g.setColour (above ? Colours::focus (owner) : juce::Colour (Colours::dim).withAlpha (owner >= 0 ? 0.6f : 0.25f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l, y (v), rr, r.getBottom()));
+        }
+        if (owner >= 0)
+        {
+            g.setColour (juce::Colours::white.withAlpha (0.85f));
+            g.drawHorizontalLine ((int) y (plan[(size_t) b].marginDb), l, rr);
+        }
+    }
+    g.setColour (juce::Colour (Colours::dim));
+    g.setFont (juce::FontOptions (10.0f));
+    g.drawText (jp ("突出度（バー）としきい値（白線）"), r.withTrimmedLeft (4).withHeight (12), juce::Justification::topLeft);
+}
+
+// ============================================================================ HistoryDisplay
+
+HistoryDisplay::HistoryDisplay (SasariProcessor& p) : proc (p), image (juce::Image::ARGB, 240, 64, true) {}
+
+void HistoryDisplay::tick()
+{
+    // Scroll one column (30 per second -> 8 s), then draw the newest reduction per row.
+    const int w = image.getWidth(), h = image.getHeight();
+    image.moveImageSection (0, 0, 1, 0, w - 1, h);
+    const auto s = proc.currentSettings();
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
+    const auto plan = makePlan (s, layout);
+    auto& m = proc.engine.meters;
+    const int nb = juce::jmin (layout.numBands, m.numBands.load());
+    for (int py = 0; py < h; ++py)
+    {
+        const float f = FreqAxis::hi * std::pow (FreqAxis::lo / FreqAxis::hi, ((float) py + 0.5f) / (float) h);
+        juce::Colour c (0x00000000);
+        for (int b = 0; b < nb; ++b)
+            if (f >= layout.low (b) && f < layout.high (b))
+            {
+                const float grv = m.grDb[(size_t) b].load();
+                if (grv > 0.2f && plan[(size_t) b].owner >= 0)
+                    c = Colours::focus (plan[(size_t) b].owner).interpolatedWith (juce::Colour (Colours::red), 0.5f)
+                            .withAlpha (juce::jlimit (0.5f, 1.0f, 0.4f + grv / 10.0f));
+                break;
+            }
+        image.setPixelAt (w - 1, py, c);
+    }
+    repaint();
+}
+
+void HistoryDisplay::paint (juce::Graphics& g)
+{
+    auto area = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (Colours::display));
+    g.fillRoundedRectangle (area, 6.0f);
+    const auto r = area.reduced (8.0f, 4.0f).withTrimmedLeft (60.0f);
+    g.setImageResamplingQuality (juce::Graphics::lowResamplingQuality);
+    g.drawImage (image, r, juce::RectanglePlacement::stretchToFit);
+    g.setColour (juce::Colour (Colours::stroke));
+    for (float f : { 1000.0f, 10000.0f })
+    {
+        const float yy = r.getY() + std::log (FreqAxis::hi / f) / std::log (FreqAxis::hi / FreqAxis::lo) * r.getHeight();
+        g.drawHorizontalLine ((int) yy, r.getX(), r.getRight());
+    }
+    g.setColour (juce::Colour (Colours::dim));
+    g.setFont (juce::FontOptions (10.0f));
+    g.drawFittedText (jp ("削った履歴\n（直近8秒）"), juce::Rectangle<int> ((int) area.getX() + 6, (int) area.getY() + 4, 58, (int) area.getHeight() - 8),
+                      juce::Justification::centredLeft, 3);
+    g.drawText ("10k", juce::Rectangle<float> (r.getRight() - 30, r.getY() + r.getHeight() * 0.13f - 6, 28, 12), juce::Justification::centredRight);
+    g.drawText ("1k", juce::Rectangle<float> (r.getRight() - 30, r.getY() + r.getHeight() * 0.57f - 6, 28, 12), juce::Justification::centredRight);
 }
 
 // ============================================================================ CurveDisplay
@@ -278,7 +402,7 @@ void CurveDisplay::paint (juce::Graphics& g)
     const float thr = marginDb (f.processing), ratio = ratioFor (f.intensity), knee = kneeDb (s.sharpness);
 
     auto area = getLocalBounds().toFloat();
-    g.setColour (juce::Colour (0xFF171B22));
+    g.setColour (juce::Colour (Colours::display));
     g.fillRoundedRectangle (area, 6.0f);
     const float left = area.getX() + 26, right = area.getRight() - 8, top = area.getY() + 8, bottom = area.getBottom() - 20;
     auto x = [&] (float db) { return left + (db + 30.0f) / 60.0f * (right - left); };
@@ -292,7 +416,7 @@ void CurveDisplay::paint (juce::Graphics& g)
         g.setColour (juce::Colour (Colours::dim));
         g.drawText (juce::String (d), juce::Rectangle<float> (area.getX() + 2, y ((float) d) - 6, 22, 12), juce::Justification::centredLeft);
     }
-    g.drawText (jp ("普段のレベル比 dB →"), juce::Rectangle<float> (left, bottom + 4, right - left, 14), juce::Justification::centredRight);
+    g.drawText (jp ("突出度 dB →"), juce::Rectangle<float> (left, bottom + 4, right - left, 14), juce::Justification::centredRight);
     g.setColour (juce::Colour (0xFF4C566A));
     g.drawLine (x (-30), y (-30), x (30), y (30), 1.0f);
 
@@ -310,16 +434,20 @@ void CurveDisplay::paint (juce::Graphics& g)
     g.strokePath (p, juce::PathStrokeType (2.5f));
     g.setColour (juce::Colour (Colours::text));
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
-    g.drawText (juce::String (ratio, 1) + ":1  " + (thr >= 0 ? "+" : "") + juce::String (thr, 0) + " dB",
+    g.drawText (juce::String (ratio, 1) + ":1  " + (thr >= 0 ? "+" : "") + juce::String (juce::roundToInt (thr)) + " dB",
                 juce::Rectangle<float> (left, top + 2, right - left - 4, 16), juce::Justification::centredRight);
 }
 
 // ============================================================================ Editor
 
-SasariEditor::SasariEditor (SasariProcessor& p) : AudioProcessorEditor (p), proc (p), curve (p), bands (p)
+SasariEditor::SasariEditor (SasariProcessor& p)
+    : AudioProcessorEditor (p), proc (p), curve (p), spectrum (p), prominence (p), history (p)
 {
     setLookAndFeel (&lnf);
     auto& state = proc.apvts;
+    addAndMakeVisible (body);
+    body.painter = [this] (juce::Graphics& g) { paintBody (g); };
+    body.addMouseListener (this, true); // one undo transaction per mouse gesture
 
     for (int i = 0; i < proc.getNumPrograms(); ++i)
         presetBox.addItem (proc.getProgramName (i), i + 1);
@@ -328,84 +456,122 @@ SasariEditor::SasariEditor (SasariProcessor& p) : AudioProcessorEditor (p), proc
         if (presetBox.getSelectedId() > 0)
             proc.setCurrentProgram (presetBox.getSelectedId() - 1);
     };
-    addAndMakeVisible (presetBox);
+    body.addAndMakeVisible (presetBox);
+
+    for (int i = 0; i < 2; ++i)
+    {
+        abButtons[i].setButtonText (i == 0 ? "A" : "B");
+        abButtons[i].onClick = [this, i] { proc.switchToSlot (i); };
+        abButtons[i].setTooltip (jp ("設定 A / B を切り替えて聴き比べる"));
+        body.addAndMakeVisible (abButtons[i]);
+    }
+    abCopy.onClick = [this] { proc.copySlotToOther(); };
+    body.addAndMakeVisible (abCopy);
+    undoButton.setButtonText (jp ("元に戻す"));
+    redoButton.setButtonText (jp ("やり直す"));
+    undoButton.onClick = [this] { proc.undoManager.undo(); };
+    redoButton.onClick = [this] { proc.undoManager.redo(); };
+    body.addAndMakeVisible (undoButton);
+    body.addAndMakeVisible (redoButton);
 
     const char* listenNames[] = { "Normal", "Filter", "Delta" };
     for (int i = 0; i < 3; ++i)
     {
-        auto& b = listenButtons[i];
-        b.setButtonText (listenNames[i]);
-        b.setColour (juce::TextButton::buttonOnColourId, juce::Colour (Colours::accent));
-        b.onClick = [this, i] { setChoice (params::listen, i); };
-        addAndMakeVisible (b);
+        listenButtons[i].setButtonText (listenNames[i]);
+        listenButtons[i].onClick = [this, i] { setChoice (params::listen, i); };
+        body.addAndMakeVisible (listenButtons[i]);
     }
-    listenButtons[0].setTooltip ("Normal");
-    listenButtons[1].setTooltip (jp ("選択中のターゲットの帯域だけを聴く"));
-    listenButtons[2].setTooltip (jp ("削った成分だけを聴く"));
 
-    addAndMakeVisible (curve);
-    addAndMakeVisible (bands);
+    for (auto* c : std::initializer_list<juce::Component*> { &curve, &spectrum, &prominence, &history })
+        body.addAndMakeVisible (*c);
 
     for (int f = 0; f < kNumFocus; ++f)
     {
-        auto& b = targetButtons[f];
-        b.setColour (juce::TextButton::buttonOnColourId, Colours::focus (f));
-        b.onClick = [this, f] { setChoice (params::selected, f); };
-        addAndMakeVisible (b);
+        targetButtons[f].setColour (juce::TextButton::buttonOnColourId, Colours::focus (f));
+        targetButtons[f].onClick = [this, f] { setChoice (params::selected, f); };
+        body.addAndMakeVisible (targetButtons[f]);
     }
-    addAndMakeVisible (targetOn);
-    for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &sharpKnob, &mixKnob, &rangeKnob, &outKnob,
-                     &shelfFreqKnob, &shelfGainKnob })
-        addAndMakeVisible (*k);
-    targetHint.setFont (juce::FontOptions (12.0f));
+    body.addAndMakeVisible (targetOn);
+    for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob, &sharpKnob, &mixKnob,
+                     &rangeKnob, &outKnob, &selectivityKnob, &shelfFreqKnob, &shelfGainKnob })
+        body.addAndMakeVisible (*k);
+    attackKnob.attach (state, params::customAttack);
+    releaseKnob.attach (state, params::customRelease);
+
+    for (auto* l : { &targetHint, &rangeWarning })
+    {
+        l->setFont (juce::FontOptions (12.0f));
+        l->setJustificationType (juce::Justification::topLeft);
+        l->setMinimumHorizontalScale (1.0f);
+        body.addAndMakeVisible (*l);
+    }
     targetHint.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
-    targetHint.setJustificationType (juce::Justification::topLeft);
-    targetHint.setMinimumHorizontalScale (1.0f);
-    addAndMakeVisible (targetHint);
+    rangeWarning.setColour (juce::Label::textColourId, juce::Colour (Colours::warn));
+    rangeWarning.setText (jp ("⚠ この帯域は解析範囲の外です。「解析範囲」を 400 Hz〜 にしてください。"), juce::dontSendNotification);
 
     sharpKnob.attach (state, params::sharpness);
     mixKnob.attach (state, params::mix);
     rangeKnob.attach (state, params::range);
     outKnob.attach (state, params::output);
+    selectivityKnob.attach (state, params::selectivity);
+    selectivityKnob.slider.setTooltip (jp ("0%＝普段より大きくなったら反応／100%＝周りの帯域より突出したら反応"));
     shelfFreqKnob.attach (state, params::shelfFreq);
     shelfGainKnob.attach (state, params::shelfGain);
 
-    shelfOn.setButtonText (jp ("高域シェルフ（常時）"));
+    shelfOn.setButtonText (jp ("高域シェルフ"));
     shelfOnAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::shelfOn, shelfOn);
-    addAndMakeVisible (shelfOn);
+    body.addAndMakeVisible (shelfOn);
 
-    autoOn.setButtonText (jp ("オート（曲に追従）"));
-    autoAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::autoLevel, autoOn);
-    addAndMakeVisible (autoOn);
-    autoStatus.setFont (juce::FontOptions (11.0f));
-    autoStatus.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
-    addAndMakeVisible (autoStatus);
-
-    resolutionBox.addItemList ({ jp ("標準 1/3 オクターブ×10"), jp ("細かい 1/6 オクターブ×20") }, 1);
+    referenceBox.addItemList ({ jp ("固定の推定値"), jp ("オート（曲に追従）"), jp ("学習して固定") }, 1);
+    resolutionBox.addItemList ({ jp ("1/3 オクターブ"), jp ("1/6 オクターブ") }, 1);
+    analysisBox.addItemList ({ jp ("1.6〜16 kHz（遅延 11 ms）"), jp ("400 Hz〜16 kHz（21 ms）") }, 1);
+    channelsBox.addItemList ({ jp ("ステレオ（左右連動）"), jp ("Mid のみ（中央）"), jp ("Side のみ（左右）") }, 1);
+    referenceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::reference, referenceBox);
     resolutionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::resolution, resolutionBox);
-    addAndMakeVisible (resolutionBox);
-    channelsBox.addItemList ({ jp ("ステレオ（左右連動）"), jp ("Mid のみ（中央・ボーカル）"), jp ("Side のみ（左右・シンバル）") }, 1);
+    analysisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::analysis, analysisBox);
     channelsAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::channels, channelsBox);
-    addAndMakeVisible (channelsBox);
-    for (auto* l : { &resolutionLabel, &channelsLabel })
+    for (auto* b : { &referenceBox, &resolutionBox, &analysisBox, &channelsBox })
+        body.addAndMakeVisible (*b);
+    const std::pair<juce::Label*, const char*> labels[] = {
+        { &referenceLabel, "基準レベル" }, { &resolutionLabel, "検出の細かさ" }, { &analysisLabel, "解析範囲" }, { &channelsLabel, "処理するチャンネル" }
+    };
+    for (auto [l, text] : labels)
     {
+        l->setText (jp (text), juce::dontSendNotification);
         l->setFont (juce::FontOptions (11.0f));
         l->setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
-        addAndMakeVisible (*l);
+        body.addAndMakeVisible (*l);
     }
-    resolutionLabel.setText (jp ("検出の細かさ"), juce::dontSendNotification);
-    channelsLabel.setText (jp ("処理するチャンネル"), juce::dontSendNotification);
+    learnButton.setButtonText (jp ("Learn（8秒）"));
+    learnButton.setTooltip (jp ("再生しながら押すと、8秒間で各帯域の普段のレベルを覚えて固定します"));
+    learnButton.onClick = [this] { proc.startLearn(); };
+    body.addAndMakeVisible (learnButton);
+    learnStatus.setFont (juce::FontOptions (11.0f));
+    learnStatus.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
+    body.addAndMakeVisible (learnStatus);
 
     attachSelectedTarget();
-    setSize (880, 640);
+    layoutBody();
+
+    // Read the remembered size before the resize limits trigger resized() (which stores the scale).
+    const float scale = juce::jlimit (0.7f, 1.6f, proc.editorScale);
+    setResizable (true, true);
+    setResizeLimits (designWidth * 7 / 10, designHeight * 7 / 10, designWidth * 16 / 10, designHeight * 16 / 10);
+    if (auto* c = getConstrainer())
+        c->setFixedAspectRatio ((double) designWidth / designHeight);
+    setSize (juce::roundToInt (designWidth * scale), juce::roundToInt (designHeight * scale));
+    constructed = true;
     startTimerHz (30);
 }
 
 SasariEditor::~SasariEditor()
 {
     stopTimer();
+    body.removeMouseListener (this);
     setLookAndFeel (nullptr);
 }
+
+void SasariEditor::mouseDown (const juce::MouseEvent&) { proc.undoManager.beginNewTransaction(); }
 
 int SasariEditor::choice (const juce::String& id) const
 {
@@ -435,6 +601,8 @@ void SasariEditor::attachSelectedTarget()
     intKnob.attach (state, params::id (f, "int"));
     for (auto* k : { &procKnob, &intKnob })
         k->setColour (Colours::focus (f));
+    attackKnob.setVisible (f == kCustom);
+    releaseKnob.setVisible (f == kCustom);
     targetOnAttachment.reset();
     targetOn.setButtonText (jp ("「") + jp (targetName (f)) + jp ("」を抑える"));
     targetOnAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (state, params::id (f, "on"), targetOn);
@@ -447,6 +615,7 @@ void SasariEditor::timerCallback()
         attachSelectedTarget();
 
     const auto s = proc.currentSettings();
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
     for (int f = 0; f < kNumFocus; ++f)
     {
         targetButtons[f].setButtonText (jp (targetName (f)) + "\n" + (s.focus[(size_t) f].enabled ? "ON" : "OFF"));
@@ -454,30 +623,49 @@ void SasariEditor::timerCallback()
     }
     for (int i = 0; i < 3; ++i)
         listenButtons[i].setToggleState ((int) s.listen == i, juce::dontSendNotification);
-    const bool on = s.focus[(size_t) s.selected].enabled;
-    for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob })
-        k->slider.setEnabled (on);
+    const int active = proc.getActiveSlot();
+    for (int i = 0; i < 2; ++i)
+        abButtons[i].setToggleState (i == active, juce::dontSendNotification);
+    abCopy.setButtonText (active == 0 ? jp ("A→B") : jp ("B→A"));
+    undoButton.setEnabled (proc.undoManager.canUndo());
+    redoButton.setEnabled (proc.undoManager.canRedo());
+
+    const auto& sf = s.focus[(size_t) s.selected];
+    for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob })
+        k->slider.setEnabled (sf.enabled);
+    rangeWarning.setVisible (sf.enabled && outsideLayout (sf, layout));
     shelfFreqKnob.slider.setEnabled (s.shelfOn);
     shelfGainKnob.slider.setEnabled (s.shelfOn);
 
-    const float learned = proc.engine.meters.learnedSeconds.load();
-    autoStatus.setText (! s.autoLevel ? jp ("固定の推定値を基準にしています")
-                                      : (learned < 10.0f ? jp ("学習中… ") + juce::String (learned, 0) + jp (" 秒")
-                                                         : jp ("追従中（バー＝普段比、白線＝しきい値、赤＝リダクション）")),
-                        juce::dontSendNotification);
-    bands.tick();
+    auto& m = proc.engine.meters;
+    const float progress = m.learnProgress.load();
+    juce::String status;
+    if (progress >= 0.0f)
+        status = jp ("学習中… ") + juce::String (juce::roundToInt (progress * 100.0f)) + " %";
+    else if (s.reference == Reference::Learned)
+        status = m.profileValid.load() ? jp ("学習済み（固定中）") : jp ("未学習：再生しながら Learn を押してください");
+    else if (s.reference == Reference::Auto)
+        status = m.learnedSeconds.load() < 10.0f ? jp ("オート：学習中… ") + juce::String (juce::roundToInt (m.learnedSeconds.load())) + jp (" 秒")
+                                                  : jp ("オート：追従中");
+    else
+        status = jp ("固定の推定値を使用中");
+    learnStatus.setText (status, juce::dontSendNotification);
+
+    spectrum.tick();
+    prominence.tick();
+    history.tick();
     curve.repaint();
 }
 
-void SasariEditor::paint (juce::Graphics& g)
+void SasariEditor::paintBody (juce::Graphics& g)
 {
     g.fillAll (juce::Colour (Colours::bg));
     g.setColour (juce::Colour (Colours::text));
-    g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-    g.drawText (jp ("刺さりを抑えるソフト"), 16, 10, 320, 30, juce::Justification::centredLeft);
+    g.setFont (juce::FontOptions (21.0f, juce::Font::bold));
+    g.drawText (jp ("刺さりを抑えるソフト"), 14, 8, 260, 28, juce::Justification::centredLeft);
     g.setColour (juce::Colour (Colours::dim));
-    g.setFont (juce::FontOptions (11.0f));
-    g.drawText ("Sasari Osaeru  -  harshness / sibilance suppressor", 16, 38, 400, 14, juce::Justification::centredLeft);
+    g.setFont (juce::FontOptions (10.0f));
+    g.drawText ("Sasari Osaeru 2.0  -  harshness / sibilance suppressor", 14, 34, 320, 14, juce::Justification::centredLeft);
 
     auto panel = [&] (juce::Rectangle<int> r, const juce::String& title) {
         g.setColour (juce::Colour (Colours::panel));
@@ -488,42 +676,63 @@ void SasariEditor::paint (juce::Graphics& g)
         g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
         g.drawText (title, r.getX() + 10, r.getY() + 4, r.getWidth() - 20, 16, juce::Justification::centredLeft);
     };
-    panel ({ 12, 300, 856, 186 }, jp ("ターゲット（抑えたい音の種類）"));
-    panel ({ 12, 494, 856, 134 }, jp ("共通 ／ 高域シェルフ ／ 検出"));
+    panel ({ 12, 388, 976, 192 }, jp ("ターゲット（抑えたい音の種類）"));
+    panel ({ 12, 586, 976, 146 }, jp ("共通 ／ 高域シェルフ ／ 検出"));
+}
+
+void SasariEditor::layoutBody()
+{
+    body.setBounds (0, 0, designWidth, designHeight);
+
+    presetBox.setBounds (300, 12, 190, 28);
+    abButtons[0].setBounds (500, 12, 34, 28);
+    abButtons[1].setBounds (536, 12, 34, 28);
+    abCopy.setBounds (572, 12, 52, 28);
+    undoButton.setBounds (634, 12, 76, 28);
+    redoButton.setBounds (712, 12, 76, 28);
+    for (int i = 0; i < 3; ++i)
+        listenButtons[i].setBounds (798 + i * 64, 12, 62, 28);
+
+    curve.setBounds (12, 54, 230, 256);
+    spectrum.setBounds (252, 54, 736, 190);
+    prominence.setBounds (252, 248, 736, 62);
+    history.setBounds (12, 316, 976, 66);
+
+    for (int f = 0; f < kNumFocus; ++f)
+        targetButtons[f].setBounds (22 + f * 118, 410, 114, 40);
+    targetOn.setBounds (600, 412, 300, 28);
+    rangeWarning.setBounds (600, 442, 380, 32);
+    targetHint.setBounds (600, 476, 380, 100);
+    const int ky = 460;
+    Knob* targetKnobs[] = { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob };
+    for (int i = 0; i < 6; ++i)
+        targetKnobs[i]->setBounds (22 + i * 94, ky, 90, 112);
+
+    const int gy = 608;
+    Knob* commonKnobs[] = { &sharpKnob, &mixKnob, &rangeKnob, &outKnob, &selectivityKnob };
+    for (int i = 0; i < 5; ++i)
+        commonKnobs[i]->setBounds (18 + i * 82, gy, 80, 108);
+    shelfOn.setBounds (432, 598, 160, 24);
+    shelfFreqKnob.setBounds (428, gy + 20, 80, 96);
+    shelfGainKnob.setBounds (508, gy + 20, 80, 96);
+
+    const int cx = 604, cw = 186;
+    referenceLabel.setBounds (cx, 596, cw, 14);
+    referenceBox.setBounds (cx, 610, cw - 6, 24);
+    resolutionLabel.setBounds (cx + cw, 596, cw, 14);
+    resolutionBox.setBounds (cx + cw, 610, cw - 6, 24);
+    analysisLabel.setBounds (cx, 638, cw, 14);
+    analysisBox.setBounds (cx, 652, cw - 6, 24);
+    channelsLabel.setBounds (cx + cw, 638, cw, 14);
+    channelsBox.setBounds (cx + cw, 652, cw - 6, 24);
+    learnButton.setBounds (cx, 686, 120, 28);
+    learnStatus.setBounds (cx + 126, 686, 250, 28);
 }
 
 void SasariEditor::resized()
 {
-    presetBox.setBounds (440, 14, 200, 28);
-    for (int i = 0; i < 3; ++i)
-        listenButtons[i].setBounds (652 + i * 72, 14, 70, 28);
-
-    curve.setBounds (12, 60, 250, 230);
-    bands.setBounds (272, 60, 596, 230);
-
-    for (int f = 0; f < kNumFocus; ++f)
-        targetButtons[f].setBounds (22 + f * 124, 324, 120, 40);
-    targetOn.setBounds (420, 330, 260, 28);
-    const int ky = 372;
-    lowKnob.setBounds (22, ky, 92, 108);
-    highKnob.setBounds (118, ky, 92, 108);
-    procKnob.setBounds (214, ky, 92, 108);
-    intKnob.setBounds (310, ky, 92, 108);
-    targetHint.setBounds (420, 370, 436, 100);
-
-    const int gy = 516;
-    sharpKnob.setBounds (22, gy, 84, 106);
-    mixKnob.setBounds (106, gy, 84, 106);
-    rangeKnob.setBounds (190, gy, 84, 106);
-    outKnob.setBounds (274, gy, 84, 106);
-    shelfOn.setBounds (372, 508, 200, 26);
-    shelfFreqKnob.setBounds (376, gy + 22, 84, 84);
-    shelfGainKnob.setBounds (464, gy + 22, 84, 84);
-
-    resolutionLabel.setBounds (580, 504, 280, 16);
-    resolutionBox.setBounds (580, 520, 276, 26);
-    channelsLabel.setBounds (580, 548, 280, 16);
-    channelsBox.setBounds (580, 564, 276, 26);
-    autoOn.setBounds (580, 594, 276, 22);
-    autoStatus.setBounds (580, 614, 288, 14);
+    const float scale = (float) getWidth() / (float) designWidth;
+    body.setTransform (juce::AffineTransform::scale (scale));
+    if (constructed)
+        proc.editorScale = scale;
 }

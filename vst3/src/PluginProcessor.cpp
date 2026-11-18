@@ -14,34 +14,51 @@ struct Preset
 
 FocusSettings fs (int f, bool on, float proc, float inten, float lo = -1, float hi = -1)
 {
-    return { on, lo > 0 ? lo : kFocusInfo[f].defaultLowHz, hi > 0 ? hi : kFocusInfo[f].defaultHighHz, proc, inten };
+    FocusSettings r { on, lo > 0 ? lo : kFocusInfo[f].defaultLowHz, hi > 0 ? hi : kFocusInfo[f].defaultHighHz, proc, inten };
+    r.attackMs = kFocusInfo[f].baseAttackMs;
+    r.releaseMs = kFocusInfo[f].baseReleaseMs;
+    return r;
 }
 
-// Same presets as the Android app.
+// Same presets as the Android app, plus one for the custom target (SPEC 4.4).
 const std::vector<Preset>& presets()
 {
     static const std::vector<Preset> list {
         { "Standard (all three targets)", [] (Settings&) {} },
         { "Female vocal sibilance", [] (Settings& s) {
-              s.focus = { fs (0, false, 40, 40), fs (1, true, 65, 70, 5500, 11000), fs (2, true, 40, 45, 11000, 16000) };
+              s.focus[0] = fs (0, false, 40, 40);
+              s.focus[1] = fs (1, true, 65, 70, 5500, 11000);
+              s.focus[2] = fs (2, true, 40, 45, 11000, 16000);
               s.selected = 1;
           } },
         { "Hi-hats and cymbals", [] (Settings& s) {
-              s.focus = { fs (0, false, 40, 40), fs (1, true, 45, 50, 4500, 7000), fs (2, true, 65, 70, 7000, 16000) };
+              s.focus[0] = fs (0, false, 40, 40);
+              s.focus[1] = fs (1, true, 45, 50, 4500, 7000);
+              s.focus[2] = fs (2, true, 65, 70, 7000, 16000);
               s.selected = 2;
           } },
         { "Distorted guitar", [] (Settings& s) {
-              s.focus = { fs (0, true, 60, 55, 2000, 6000), fs (1, true, 45, 50, 6000, 10000), fs (2, true, 40, 45) };
+              s.focus[0] = fs (0, true, 60, 55, 2000, 6000);
+              s.focus[1] = fs (1, true, 45, 50, 6000, 10000);
+              s.focus[2] = fs (2, true, 40, 45);
               s.selected = 0;
           } },
         { "Gentle", [] (Settings& s) {
-              s.focus = { fs (0, true, 35, 35), fs (1, true, 45, 45), fs (2, true, 40, 40) };
+              s.focus[0] = fs (0, true, 35, 35);
+              s.focus[1] = fs (1, true, 45, 45);
+              s.focus[2] = fs (2, true, 40, 40);
               s.sharpness = 35;
           } },
         { "Long listening (+ shelf)", [] (Settings& s) {
               s.shelfOn = true;
               s.shelfHz = 9000;
               s.shelfDb = -3;
+          } },
+        { "Nasal mids (extended range)", [] (Settings& s) {
+              s.extendedRange = true;
+              s.focus[3] = fs (3, true, 55, 50, 600, 1200);
+              s.selectivity = 60;
+              s.selected = 3;
           } },
     };
     return list;
@@ -52,15 +69,18 @@ SasariProcessor::SasariProcessor()
     : AudioProcessor (BusesProperties()
                           .withInput ("Input", juce::AudioChannelSet::stereo(), true)
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
-      apvts (*this, nullptr, "SasariOsaeru", sasari::params::createLayout()),
+      apvts (*this, &undoManager, "SasariOsaeru", sasari::params::createLayout()),
       raw (apvts)
 {
 }
+
+SasariProcessor::~SasariProcessor() { cancelPendingUpdate(); }
 
 void SasariProcessor::prepareToPlay (double sampleRate, int)
 {
     engine.prepare (sampleRate, juce::jmin (2, getTotalNumOutputChannels()));
     engine.setSettings (raw.read());
+    latencyWanted.store (engine.latency());
     setLatencySamples (engine.latency());
 }
 
@@ -78,8 +98,16 @@ void SasariProcessor::run (juce::AudioBuffer<float>& buffer, bool bypass)
     for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c)
         buffer.clear (c, 0, buffer.getNumSamples());
     engine.setSettings (raw.read());
+    // The analysis range changes the frame size and so the latency: tell the host (message thread).
+    if (engine.latency() != latencyWanted.load())
+    {
+        latencyWanted.store (engine.latency());
+        triggerAsyncUpdate();
+    }
     engine.process (buffer.getArrayOfWritePointers(), juce::jmin (2, buffer.getNumChannels()), buffer.getNumSamples(), bypass);
 }
+
+void SasariProcessor::handleAsyncUpdate() { setLatencySamples (latencyWanted.load()); }
 
 void SasariProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) { run (buffer, false); }
 
@@ -88,11 +116,23 @@ void SasariProcessor::processBlockBypassed (juce::AudioBuffer<float>& buffer, ju
 
 juce::AudioProcessorEditor* SasariProcessor::createEditor() { return new SasariEditor (*this); }
 
+// ---- presets ----
+
 int SasariProcessor::getNumPrograms() { return (int) presets().size(); }
 
 const juce::String SasariProcessor::getProgramName (int index)
 {
     return juce::isPositiveAndBelow (index, getNumPrograms()) ? presets()[(size_t) index].name : "";
+}
+
+void SasariProcessor::setParam (const juce::String& id, float value)
+{
+    if (auto* p = apvts.getParameter (id))
+    {
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (value));
+        p->endChangeGesture();
+    }
 }
 
 void SasariProcessor::setCurrentProgram (int index)
@@ -103,52 +143,145 @@ void SasariProcessor::setCurrentProgram (int index)
     sasari::Settings s;
     const auto current = raw.read();
     s.bandsPerOctave = current.bandsPerOctave; // device-level choices are kept
-    s.autoLevel = current.autoLevel;
+    s.reference = current.reference;
     s.channels = current.channels;
+    s.extendedRange = current.extendedRange;
     presets()[(size_t) index].apply (s);
 
-    auto set = [this] (const juce::String& id, float value) {
-        if (auto* p = apvts.getParameter (id))
-            p->setValueNotifyingHost (p->convertTo0to1 (value));
-    };
+    undoManager.beginNewTransaction();
     using namespace sasari::params;
     for (int f = 0; f < kNumFocus; ++f)
     {
         const auto& fs = s.focus[(size_t) f];
-        set (id (f, "on"), fs.enabled ? 1.0f : 0.0f);
-        set (id (f, "low"), fs.lowHz);
-        set (id (f, "high"), fs.highHz);
-        set (id (f, "proc"), fs.processing);
-        set (id (f, "int"), fs.intensity);
+        setParam (id (f, "on"), fs.enabled ? 1.0f : 0.0f);
+        setParam (id (f, "low"), fs.lowHz);
+        setParam (id (f, "high"), fs.highHz);
+        setParam (id (f, "proc"), fs.processing);
+        setParam (id (f, "int"), fs.intensity);
     }
-    set (selected, (float) s.selected);
-    set (sharpness, s.sharpness);
-    set (mix, s.mix);
-    set (range, s.rangeDb);
-    set (output, s.outputDb);
-    set (listen, 0.0f);
-    set (shelfOn, s.shelfOn ? 1.0f : 0.0f);
-    set (shelfFreq, s.shelfHz);
-    set (shelfGain, s.shelfDb);
+    setParam (customAttack, s.focus[(size_t) kCustom].attackMs);
+    setParam (customRelease, s.focus[(size_t) kCustom].releaseMs);
+    setParam (selected, (float) s.selected);
+    setParam (sharpness, s.sharpness);
+    setParam (mix, s.mix);
+    setParam (range, s.rangeDb);
+    setParam (output, s.outputDb);
+    setParam (selectivity, s.selectivity);
+    setParam (analysis, s.extendedRange ? 1.0f : 0.0f);
+    setParam (listen, 0.0f);
+    setParam (shelfOn, s.shelfOn ? 1.0f : 0.0f);
+    setParam (shelfFreq, s.shelfHz);
+    setParam (shelfGain, s.shelfDb);
 }
+
+// ---- learn ----
+
+void SasariProcessor::startLearn()
+{
+    undoManager.beginNewTransaction();
+    setParam (sasari::params::reference, (float) sasari::Reference::Learned);
+    engine.requestLearn();
+}
+
+// ---- A/B ----
+
+sasari::AbSlots::Values SasariProcessor::captureValues() const
+{
+    sasari::AbSlots::Values v;
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            v[rp->getParameterID().toStdString()] = rp->convertFrom0to1 (rp->getValue());
+    return v;
+}
+
+void SasariProcessor::applyValues (const sasari::AbSlots::Values& values)
+{
+    for (const auto& [key, value] : values)
+        setParam (juce::String (key), value);
+}
+
+void SasariProcessor::switchToSlot (int slot)
+{
+    undoManager.beginNewTransaction();
+    if (const auto* values = ab.switchTo (slot, captureValues()))
+        applyValues (*values);
+}
+
+void SasariProcessor::copySlotToOther() { ab.copyToOther (captureValues()); }
+
+// ---- state ----
 
 void SasariProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("program", currentProgram, nullptr);
+    state.setProperty ("editorScale", editorScale, nullptr);
+
+    const auto profile = engine.getProfile();
+    if (profile.valid)
+    {
+        juce::StringArray values;
+        for (float v : profile.db)
+            values.add (std::isnan (v) ? "nan" : juce::String (v, 3));
+        state.setProperty ("learnedProfile", values.joinIntoString (" "), nullptr);
+    }
+
+    juce::ValueTree abTree ("AB");
+    abTree.setProperty ("active", ab.active, nullptr);
+    for (int i = 0; i < 2; ++i)
+    {
+        juce::ValueTree slot ("Slot");
+        for (const auto& [key, value] : ab.slots[(size_t) i])
+            slot.setProperty (juce::Identifier (key), value, nullptr);
+        abTree.appendChild (slot, nullptr);
+    }
+    state.appendChild (abTree, nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
 
 void SasariProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    if (auto xml = getXmlFromBinary (data, sizeInBytes))
-        if (xml->hasTagName (apvts.state.getType()))
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return;
+    auto tree = juce::ValueTree::fromXml (*xml);
+    currentProgram = tree.getProperty ("program", 0);
+    editorScale = (float) (double) tree.getProperty ("editorScale", 1.0);
+
+    sasari::Engine::Profile profile;
+    const auto text = tree.getProperty ("learnedProfile").toString();
+    if (text.isNotEmpty())
+    {
+        auto tokens = juce::StringArray::fromTokens (text, " ", "");
+        if (tokens.size() == sasari::kProfileBands)
         {
-            auto tree = juce::ValueTree::fromXml (*xml);
-            currentProgram = tree.getProperty ("program", 0);
-            apvts.replaceState (tree);
+            profile.valid = true;
+            for (int k = 0; k < sasari::kProfileBands; ++k)
+                profile.db[(size_t) k] = tokens[k] == "nan" ? std::numeric_limits<float>::quiet_NaN() : tokens[k].getFloatValue();
         }
+    }
+    engine.setProfile (profile);
+
+    ab = {};
+    if (auto abTree = tree.getChildWithName ("AB"); abTree.isValid())
+    {
+        ab.active = juce::jlimit (0, 1, (int) abTree.getProperty ("active", 0));
+        for (int i = 0; i < juce::jmin (2, abTree.getNumChildren()); ++i)
+        {
+            const auto slot = abTree.getChild (i);
+            for (int p = 0; p < slot.getNumProperties(); ++p)
+            {
+                const auto name = slot.getPropertyName (p);
+                ab.slots[(size_t) i][name.toString().toStdString()] = (float) (double) slot.getProperty (name);
+            }
+        }
+        tree.removeChild (abTree, nullptr);
+    }
+
+    apvts.replaceState (tree);
+    undoManager.clearUndoHistory();
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new SasariProcessor(); }

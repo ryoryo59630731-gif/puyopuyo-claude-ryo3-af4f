@@ -1,15 +1,16 @@
 #pragma once
 
+#include "AbSlots.h"
 #include "Params.h"
 #include "dsp/Engine.h"
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
-class SasariProcessor : public juce::AudioProcessor
+class SasariProcessor : public juce::AudioProcessor, private juce::AsyncUpdater
 {
 public:
     SasariProcessor();
-    ~SasariProcessor() override = default;
+    ~SasariProcessor() override;
 
     void prepareToPlay (double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -35,17 +36,35 @@ public:
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
 
+    // ---- editor helpers (message thread) ----
+    sasari::Settings currentSettings() const { return raw.read(); }
+
+    /** Learn the usual levels for a few seconds, then freeze them (switches Reference to Learned). */
+    void startLearn();
+
+    /** A/B comparison. */
+    int getActiveSlot() const { return ab.active; }
+    void switchToSlot (int slot);
+    void copySlotToOther();
+
+    /** Undo history for parameter changes (one transaction per mouse gesture in the editor). */
+    juce::UndoManager undoManager;
     juce::AudioProcessorValueTreeState apvts;
     sasari::Engine engine;
 
-    /** Current settings as the editor sees them (message thread). */
-    sasari::Settings currentSettings() const { return raw.read(); }
+    float editorScale = 1.0f;
 
 private:
     void run (juce::AudioBuffer<float>& buffer, bool bypass);
+    void handleAsyncUpdate() override;
+    sasari::AbSlots::Values captureValues() const;
+    void applyValues (const sasari::AbSlots::Values& values);
+    void setParam (const juce::String& id, float value);
 
     sasari::params::Raw raw;
     int currentProgram = 0;
+    sasari::AbSlots ab;
+    std::atomic<int> latencyWanted { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SasariProcessor)
 };

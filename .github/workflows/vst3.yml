@@ -48,7 +48,12 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
 
-      - name: Unit and host tests
+      - name: Unit, processor and host tests (Linux: on a virtual display)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a ctest --test-dir build -C Release --output-on-failure
+
+      - name: Unit, processor and host tests
+        if: runner.os != 'Linux'
         run: ctest --test-dir build -C Release --output-on-failure
 
       - name: pluginval (strictness 5)
@@ -69,6 +74,7 @@ jobs:
           mkdir -p dist
           cp -R build/SasariOsaeru_artefacts/Release/VST3/SasariOsaeru.vst3 dist/
           cp vst3/README.md dist/README.md
+          if [ "${{ runner.os }}" = "Windows" ]; then cp "vst3/dist/インストール方法.txt" dist/; fi
 
       - uses: actions/upload-artifact@v4
         with:

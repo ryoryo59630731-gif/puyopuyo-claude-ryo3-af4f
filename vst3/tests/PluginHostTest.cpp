@@ -106,8 +106,8 @@ int main (int argc, char** argv)
         return 1;
 
     check (plugin->getTotalNumInputChannels() == 2 && plugin->getTotalNumOutputChannels() == 2, "stereo in/out");
-    check (plugin->getParameters().size() >= 27, "parameters: " + juce::String (plugin->getParameters().size()));
-    check (plugin->getNumPrograms() == 6, "6 factory presets");
+    check (plugin->getParameters().size() >= 36, "parameters: " + juce::String (plugin->getParameters().size()));
+    check (plugin->getNumPrograms() == 7, "7 factory presets");
 
     for (double sr : { 44100.0, 48000.0, 96000.0 })
     {
@@ -125,7 +125,8 @@ int main (int argc, char** argv)
     plugin->prepareToPlay (48000, 512);
 
     // Strongest vocal setting, fixed reference: loud 7 kHz must drop, 500 Hz must stay.
-    setParam (*plugin, "Auto Level", 0.0f);
+    setParam (*plugin, "Reference", 0.0f);   // fixed estimate
+    setParam (*plugin, "Selectivity", 0.0f);
     setParam (*plugin, "Guitar On", 0.0f);
     setParam (*plugin, "Hi-hat On", 0.0f);
     setParam (*plugin, "Vocal S Processing", 1.0f);
@@ -161,9 +162,35 @@ int main (int argc, char** argv)
     check (findParam (*plugin, "Hi-hat On")->getValue() > 0.5f, "preset applied");
     check (plugin->getProgramName (1).isNotEmpty(), "preset names");
 
+    // Analysis range 400 Hz-16 kHz doubles the frame: the host must be told the new latency.
+    setParam (*plugin, "Analysis Range", 1.0f);
+    {
+        juce::AudioBuffer<float> b (2, 512);
+        b.clear();
+        juce::MidiBuffer m;
+        plugin->processBlock (b, m);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+    }
+    check (plugin->getLatencySamples() == 1024, "latency reported after switching the analysis range: "
+                                                    + juce::String (plugin->getLatencySamples()));
+    setParam (*plugin, "Analysis Range", 0.0f);
+    {
+        juce::AudioBuffer<float> b (2, 512);
+        b.clear();
+        juce::MidiBuffer m;
+        plugin->processBlock (b, m);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (500);
+    }
+    check (plugin->getLatencySamples() == 512, "latency back to 512");
+
+    // Custom target in the extended range reduces a loud 600 Hz tone (preset "Nasal mids").
+    plugin->setCurrentProgram (6);
+    check (findParam (*plugin, "Custom On")->getValue() > 0.5f && findParam (*plugin, "Analysis Range")->getValue() > 0.5f,
+           "nasal preset enables the custom target and the extended range");
+
     // Defaults with auto level: processing a long block must stay finite.
     plugin->setCurrentProgram (0);
-    setParam (*plugin, "Auto Level", 1.0f);
+    setParam (*plugin, "Reference", 0.5f); // auto
     juce::AudioBuffer<float> noise (2, 48000 * 5);
     juce::Random rnd (1);
     for (int c = 0; c < 2; ++c)
