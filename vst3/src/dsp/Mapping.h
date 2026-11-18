@@ -30,6 +30,14 @@ inline constexpr FocusInfo kFocusInfo[kNumFocus] = {
     { 600.0f, 1200.0f, 5.0f, 100.0f },
 };
 
+/** Which part of the stereo image a target listens to and acts on. */
+enum class ChannelMode : int
+{
+    Linked = 0, // detect on the louder of L / R, reduce Mid and Side equally (image unchanged)
+    Mid = 1,    // detect and reduce the centre only (lead vocal)
+    Side = 2,   // detect and reduce the stereo width only (wide cymbals, doubled guitars)
+};
+
 struct FocusSettings
 {
     bool enabled = true;
@@ -38,10 +46,10 @@ struct FocusSettings
     float intensity = 50.0f;  // 0..100: ratio 1:1 .. 20:1
     float attackMs = 5.0f;    // custom target only
     float releaseMs = 100.0f; // custom target only
+    ChannelMode channel = ChannelMode::Linked;
 };
 
 enum class Listen : int { Normal = 0, Filter = 1, Delta = 2 };
-enum class ChannelMode : int { Linked = 0, Mid = 1, Side = 2 };
 enum class Reference : int { Fixed = 0, Auto = 1, Learned = 2 };
 
 struct Settings
@@ -62,7 +70,6 @@ struct Settings
     bool extendedRange = false; // analyse from 400 Hz instead of 1.6 kHz (longer frames)
     Reference reference = Reference::Auto;
     Listen listen = Listen::Normal;
-    ChannelMode channels = ChannelMode::Linked;
     bool shelfOn = false;
     float shelfHz = 8000.0f;
     float shelfDb = -4.0f;
@@ -161,9 +168,14 @@ inline int coveredBands (const FocusSettings& f, const Layout& l, std::array<int
     return n;
 }
 
+/** Signal a band detector listens to. */
+enum class Det : int { LR = 0, M = 1, S = 2 };
+constexpr int kNumDet = 3;
+
 struct BandPlan
 {
     int owner = -1;         // Focus index or -1 (untouched)
+    Det det = Det::LR;      // what the owner listens to
     float marginDb = 0.0f;
     float ratio = 1.0f;
     float kneeDb = 0.0f;
@@ -171,10 +183,23 @@ struct BandPlan
     float releaseMs = 50.0f;
 };
 
-/** Per-band plan. Overlaps go to the most sensitive target (ties: stronger one). */
-inline std::array<BandPlan, kMaxBands> makePlan (const Settings& s, const Layout& l)
+/**
+ * Per-band plan for the Mid and the Side signal separately. A stereo (linked) target claims
+ * both, a Mid target only Mid, a Side target only Side. Where several targets claim the same
+ * band of the same signal, the most sensitive one wins (ties: the stronger one), so e.g. a Mid
+ * vocal target and a Side hi-hat target both act on an overlapping band.
+ */
+struct Plan
 {
-    std::array<BandPlan, kMaxBands> plan {};
+    std::array<BandPlan, kMaxBands> mid {}, side {};
+    const BandPlan& slot (int s, int b) const { return s == 0 ? mid[(size_t) b] : side[(size_t) b]; }
+    /** Target to colour a band with: the Mid owner, else the Side owner. */
+    int displayOwner (int b) const { return mid[(size_t) b].owner >= 0 ? mid[(size_t) b].owner : side[(size_t) b].owner; }
+};
+
+inline Plan makePlan (const Settings& s, const Layout& l)
+{
+    Plan plan;
     std::array<int, kMaxBands> idx {};
     const float knee = kneeDb (s.sharpness);
     const float tf = timeFactor (s.sharpness);
@@ -185,23 +210,33 @@ inline std::array<BandPlan, kMaxBands> makePlan (const Settings& s, const Layout
             continue;
         const float baseAttack = f == kCustom ? fs.attackMs : kFocusInfo[f].baseAttackMs;
         const float baseRelease = f == kCustom ? fs.releaseMs : kFocusInfo[f].baseReleaseMs;
+        const Det det = fs.channel == ChannelMode::Mid ? Det::M : (fs.channel == ChannelMode::Side ? Det::S : Det::LR);
+        const bool claimsMid = fs.channel != ChannelMode::Side;
+        const bool claimsSide = fs.channel != ChannelMode::Mid;
         const int n = coveredBands (fs, l, idx);
         for (int i = 0; i < n; ++i)
         {
-            auto& p = plan[(size_t) idx[(size_t) i]];
+            const int b = idx[(size_t) i];
             const float m = marginDb (fs.processing);
-            const bool tie = p.owner >= 0 && std::abs (m - p.marginDb) < 1.0e-6f;
-            const bool better = p.owner < 0 || (! tie && m < p.marginDb)
-                                || (tie && fs.intensity > s.focus[(size_t) p.owner].intensity);
-            if (! better)
-                continue;
-            const float ftf = frequencyTimeFactor (l.center (idx[(size_t) i]));
-            p.owner = f;
-            p.marginDb = m;
-            p.ratio = ratioFor (fs.intensity);
-            p.kneeDb = knee;
-            p.attackMs = baseAttack * tf * ftf;
-            p.releaseMs = baseRelease * tf * ftf;
+            const float ftf = frequencyTimeFactor (l.center (b));
+            for (auto* slot : { claimsMid ? &plan.mid[(size_t) b] : nullptr, claimsSide ? &plan.side[(size_t) b] : nullptr })
+            {
+                if (slot == nullptr)
+                    continue;
+                auto& p = *slot;
+                const bool tie = p.owner >= 0 && std::abs (m - p.marginDb) < 1.0e-6f;
+                const bool better = p.owner < 0 || (! tie && m < p.marginDb)
+                                    || (tie && fs.intensity > s.focus[(size_t) p.owner].intensity);
+                if (! better)
+                    continue;
+                p.owner = f;
+                p.det = det;
+                p.marginDb = m;
+                p.ratio = ratioFor (fs.intensity);
+                p.kneeDb = knee;
+                p.attackMs = baseAttack * tf * ftf;
+                p.releaseMs = baseRelease * tf * ftf;
+            }
         }
     }
     return plan;

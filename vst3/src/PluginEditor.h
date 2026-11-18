@@ -154,6 +154,8 @@ private:
 
     juce::TextButton targetButtons[sasari::kNumFocus];
     juce::ToggleButton targetOn;
+    juce::TextButton channelButtons[3];
+    juce::Label channelLabel;
     sasari::ui::Knob lowKnob { "LOW", juce::Colour (sasari::ui::Colours::freq) },
         highKnob { "HIGH", juce::Colour (sasari::ui::Colours::freq) },
         procKnob { "PROCESSING", juce::Colour (sasari::ui::Colours::accent) },
@@ -170,13 +172,13 @@ private:
         shelfFreqKnob { "SHELF FREQ", juce::Colour (sasari::ui::Colours::freq) },
         shelfGainKnob { "SHELF GAIN", juce::Colour (0xFFE2E8F0) };
     juce::ToggleButton shelfOn;
-    juce::ComboBox referenceBox, resolutionBox, analysisBox, channelsBox;
-    juce::Label referenceLabel, resolutionLabel, analysisLabel, channelsLabel, learnStatus;
+    juce::ComboBox referenceBox, resolutionBox, analysisBox;
+    juce::Label referenceLabel, resolutionLabel, analysisLabel, learnStatus;
     juce::TextButton learnButton;
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> targetOnAttachment, shelfOnAttachment;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> referenceAttachment, resolutionAttachment,
-        analysisAttachment, channelsAttachment;
+        analysisAttachment;
 
     int attachedTarget = -1;
     bool constructed = false;

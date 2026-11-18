@@ -14,11 +14,13 @@ namespace
     constexpr float kRmsTauSec = 4.0f;
     constexpr float kMaxDeviationDb = 18.0f;
     constexpr float kEnvStartDb = -30.0f; // detector starts well below any threshold
+    constexpr float kSideModelOffsetDb = -12.0f; // side content is usually much quieter than L/R
     constexpr double kPi = 3.14159265358979323846;
     const float kNaN = std::numeric_limits<float>::quiet_NaN();
 
     inline float dbToGain (float db) { return std::pow (10.0f, db / 20.0f); }
     inline bool differs (float a, float b) { return std::abs (a - b) > 1.0e-6f; }
+    inline float toDb (float power) { return 10.0f * std::log10 (power + 1e-12f); }
 
     void makeWindow (std::vector<float>& w, int size)
     {
@@ -32,12 +34,15 @@ Engine::Engine()
 {
     for (auto& v : meters.overDb)
         v.store (-100.0f); // "no signal" until audio has been processed
+    for (auto& v : meters.owner)
+        v.store (-1);
     for (auto& v : meters.specIn)
         v.store (-120.0f);
     for (auto& v : meters.specOut)
         v.store (-120.0f);
-    for (auto& v : profileDb)
-        v.store (kNaN);
+    for (auto& d : profileDb)
+        for (auto& v : d)
+            v.store (kNaN);
 }
 
 void Engine::prepare (double sampleRate, int numChannels)
@@ -61,7 +66,7 @@ void Engine::prepare (double sampleRate, int numChannels)
         im[c].assign (maxN, 0.0f);
     }
     const auto maxBins = maxN / 2 + 1;
-    for (auto* v : { &binHz, &binT, &binShelf, &binSolo, &binGain, &binGainOther })
+    for (auto* v : { &binHz, &binT, &binShelf, &binSolo, &binGainM, &binGainS })
         v->assign (maxBins, 0.0f);
     binSeg.assign (maxBins, -1);
 
@@ -80,28 +85,20 @@ void Engine::configure (bool extended)
     for (int k = 0; k <= half; ++k)
         binHz[(size_t) k] = (float) (k * sr / n);
 
-    // Spectrum display points: log spaced, each mapped to a bin range.
+    auto binRange = [this] (float f0, float f1, int& lo, int& hi) {
+        lo = (int) std::ceil (f0 * n / sr);
+        hi = (int) std::floor (f1 * n / sr);
+        if (hi < lo)
+            lo = hi = (int) std::lround (std::sqrt (f0 * f1) * n / sr);
+        lo = std::clamp (lo, 1, half - 1);
+        hi = std::clamp (hi, 1, half - 1);
+    };
     for (int i = 0; i < kSpecPoints; ++i)
-    {
-        const float f0 = kSpecLowHz * std::pow (kSpecHighHz / kSpecLowHz, (float) i / kSpecPoints);
-        const float f1 = kSpecLowHz * std::pow (kSpecHighHz / kSpecLowHz, (float) (i + 1) / kSpecPoints);
-        int lo = (int) std::ceil (f0 * n / sr), hi = (int) std::floor (f1 * n / sr);
-        if (hi < lo)
-            lo = hi = (int) std::lround (std::sqrt (f0 * f1) * n / sr);
-        specLo[(size_t) i] = std::clamp (lo, 1, half - 1);
-        specHi[(size_t) i] = std::clamp (hi, 1, half - 1);
-    }
-
-    // Profile bands (1/6 octave, 397 Hz - 16 kHz) for learning.
+        binRange (kSpecLowHz * std::pow (kSpecHighHz / kSpecLowHz, (float) i / kSpecPoints),
+                  kSpecLowHz * std::pow (kSpecHighHz / kSpecLowHz, (float) (i + 1) / kSpecPoints),
+                  specLo[(size_t) i], specHi[(size_t) i]);
     for (int k = 0; k < kProfileBands; ++k)
-    {
-        const float f0 = profileEdgeHz (k), f1 = profileEdgeHz (k + 1);
-        int lo = (int) std::ceil (f0 * n / sr), hi = (int) std::floor (f1 * n / sr);
-        if (hi < lo)
-            lo = hi = (int) std::lround (std::sqrt (f0 * f1) * n / sr);
-        profBinLo[(size_t) k] = std::clamp (lo, 1, half - 1);
-        profBinHi[(size_t) k] = std::clamp (hi, 1, half - 1);
-    }
+        binRange (profileEdgeHz (k), profileEdgeHz (k + 1), profBinLo[(size_t) k], profBinHi[(size_t) k]);
 
     layoutPerOctave = 0; // force rebuild
     rebuildLayout();
@@ -118,13 +115,18 @@ void Engine::reset()
         std::fill (outBuf[c].begin(), outBuf[c].end(), 0.0f);
     }
     pos = 0;
+    for (int d = 0; d < kNumDet; ++d)
+        ref[(size_t) d] = model[(size_t) d];
+    for (int s = 0; s < 2; ++s)
+    {
+        env[(size_t) s].fill (kEnvStartDb);
+        gr[(size_t) s].fill (0.0f);
+    }
     for (int b = 0; b < kMaxBands; ++b)
     {
-        ref[(size_t) b] = model[(size_t) b];
-        env[(size_t) b] = kEnvStartDb;
-        gr[(size_t) b] = 0.0f;
         meters.overDb[(size_t) b].store (-100.0f);
         meters.grDb[(size_t) b].store (0.0f);
+        meters.owner[(size_t) b].store (-1);
     }
     longRmsDb = kAssumedRmsDb;
     learnedSec = 0.0f;
@@ -166,15 +168,19 @@ void Engine::rebuildLayout()
 {
     layout = Layout (settings.bandsPerOctave, configuredExtended);
     layoutPerOctave = layout.bandsPerOctave;
-    layoutExtended = layout.extended;
     for (int b = 0; b < kMaxBands; ++b)
     {
-        model[(size_t) b] = b < layout.numBands
-                                ? kAssumedRmsDb + modelRelativeDb (layout.center (b), layout.bandsPerOctave)
-                                : -100.0f;
-        ref[(size_t) b] = model[(size_t) b];
-        env[(size_t) b] = kEnvStartDb;
-        gr[(size_t) b] = 0.0f;
+        const float m = b < layout.numBands ? kAssumedRmsDb + modelRelativeDb (layout.center (b), layout.bandsPerOctave) : -100.0f;
+        model[(size_t) Det::LR][(size_t) b] = m;
+        model[(size_t) Det::M][(size_t) b] = m;
+        model[(size_t) Det::S][(size_t) b] = m + kSideModelOffsetDb;
+    }
+    for (int d = 0; d < kNumDet; ++d)
+        ref[(size_t) d] = model[(size_t) d];
+    for (int s = 0; s < 2; ++s)
+    {
+        env[(size_t) s].fill (kEnvStartDb);
+        gr[(size_t) s].fill (0.0f);
     }
     learnedSec = 0.0f;
     meters.numBands.store (layout.numBands);
@@ -243,16 +249,18 @@ void Engine::rebuildBinMaps()
 Engine::Profile Engine::getProfile() const
 {
     Profile p;
-    for (int k = 0; k < kProfileBands; ++k)
-        p.db[(size_t) k] = profileDb[(size_t) k].load();
+    for (int d = 0; d < kNumDet; ++d)
+        for (int k = 0; k < kProfileBands; ++k)
+            p.db[(size_t) d][(size_t) k] = profileDb[(size_t) d][(size_t) k].load();
     p.valid = meters.profileValid.load();
     return p;
 }
 
 void Engine::setProfile (const Profile& p)
 {
-    for (int k = 0; k < kProfileBands; ++k)
-        profileDb[(size_t) k].store (p.valid ? p.db[(size_t) k] : kNaN);
+    for (int d = 0; d < kNumDet; ++d)
+        for (int k = 0; k < kProfileBands; ++k)
+            profileDb[(size_t) d][(size_t) k].store (p.valid ? p.db[(size_t) d][(size_t) k] : kNaN);
     meters.profileValid.store (p.valid);
     profileVersion.fetch_add (1, std::memory_order_release);
 }
@@ -263,18 +271,19 @@ void Engine::refreshFrozenRefs()
     profileVersionSeen = profileVersion.load (std::memory_order_acquire);
     const int offset = profileOffset (layout);
     const int per = layout.bandsPerOctave == 6 ? 1 : 2; // profile bands per layout band
-    for (int b = 0; b < layout.numBands; ++b)
-    {
-        double power = 0.0;
-        bool known = true;
-        for (int j = 0; j < per; ++j)
+    for (int d = 0; d < kNumDet; ++d)
+        for (int b = 0; b < layout.numBands; ++b)
         {
-            const float v = profileDb[(size_t) (offset + b * per + j)].load();
-            known = known && ! std::isnan (v);
-            power += std::pow (10.0, v / 10.0);
+            double power = 0.0;
+            bool known = true;
+            for (int j = 0; j < per; ++j)
+            {
+                const float v = profileDb[(size_t) d][(size_t) (offset + b * per + j)].load();
+                known = known && ! std::isnan (v);
+                power += std::pow (10.0, v / 10.0);
+            }
+            frozen[(size_t) d][(size_t) b] = known ? (float) (10.0 * std::log10 (power)) : kNaN;
         }
-        frozen[(size_t) b] = known ? (float) (10.0 * std::log10 (power)) : kNaN;
-    }
 }
 
 void Engine::finishLearning()
@@ -285,8 +294,9 @@ void Engine::finishLearning()
         return;
     Profile p;
     p.valid = true;
-    for (int k = 0; k < kProfileBands; ++k)
-        p.db[(size_t) k] = (float) (learnSum[(size_t) k] / learnFrames);
+    for (int d = 0; d < kNumDet; ++d)
+        for (int k = 0; k < kProfileBands; ++k)
+            p.db[(size_t) d][(size_t) k] = (float) (learnSum[(size_t) d][(size_t) k] / learnFrames);
     setProfile (p);
     refreshFrozenRefs();
 }
@@ -296,34 +306,24 @@ void Engine::finishLearning()
 void Engine::process (float* const* io, int numChannels, int numSamples, bool bypass)
 {
     const bool stereo = numChannels > 1 && numCh > 1;
-    const bool ms = stereo && settings.channels != ChannelMode::Linked;
     float* const l = io[0];
     float* const r = stereo ? io[1] : nullptr;
     for (int i = 0; i < numSamples; ++i)
     {
-        float a = l[i];
-        float b = r != nullptr ? r[i] : 0.0f;
-        if (ms)
-        {
-            const float m = 0.5f * (a + b), s = 0.5f * (a - b);
-            a = m;
-            b = s;
-        }
         const size_t w = (size_t) (n - hop + pos);
-        inBuf[0][w] = a;
-        inBuf[1][w] = b;
-
-        float y0 = outBuf[0][(size_t) pos];
-        float y1 = outBuf[1][(size_t) pos];
-        if (ms)
+        if (stereo)
         {
-            const float m = y0, s = y1;
-            y0 = m + s;
-            y1 = m - s;
+            inBuf[0][w] = 0.5f * (l[i] + r[i]); // Mid
+            inBuf[1][w] = 0.5f * (l[i] - r[i]); // Side
+            const float m = outBuf[0][(size_t) pos], s = outBuf[1][(size_t) pos];
+            l[i] = m + s;
+            r[i] = m - s;
         }
-        l[i] = y0;
-        if (r != nullptr)
-            r[i] = y1;
+        else
+        {
+            inBuf[0][w] = l[i];
+            l[i] = outBuf[0][(size_t) pos];
+        }
 
         if (++pos == hop)
         {
@@ -344,14 +344,8 @@ void Engine::process (float* const* io, int numChannels, int numSamples, bool by
 
 void Engine::processFrame (bool bypass)
 {
-    const bool stereoIn = numCh > 1;
-    const ChannelMode mode = stereoIn ? settings.channels : ChannelMode::Linked;
-    bool processed[2] = { true, stereoIn };
-    if (mode == ChannelMode::Mid)
-        processed[1] = false;
-    if (mode == ChannelMode::Side)
-        processed[0] = false;
-    const int chans = stereoIn ? 2 : 1;
+    const bool stereo = numCh > 1;
+    const int chans = stereo ? 2 : 1;
     const auto& win = *window;
 
     for (int c = 0; c < chans; ++c)
@@ -363,30 +357,47 @@ void Engine::processFrame (bool bypass)
         }
         fft->forward (re[c].data(), im[c].data());
     }
+    const float* mr = re[0].data();
+    const float* mi = im[0].data();
+    const float* sR = stereo ? re[1].data() : nullptr;
+    const float* sI = stereo ? im[1].data() : nullptr;
 
-    // ---- band levels ----
+    // Power of L (= M + S), R (= M - S), M and S in a bin range (sums of |X|^2).
+    struct Pow { float l = 0, r = 0, m = 0, s = 0; };
+    auto power = [&] (int lo, int hi) {
+        Pow p;
+        for (int k = lo; k <= hi; ++k)
+        {
+            const float pm = mr[k] * mr[k] + mi[k] * mi[k];
+            if (! stereo)
+            {
+                p.l += pm;
+                p.r += pm;
+                p.m += pm;
+                continue;
+            }
+            const float lr = mr[k] + sR[k], li = mi[k] + sI[k];
+            const float rr = mr[k] - sR[k], ri = mi[k] - sI[k];
+            p.l += lr * lr + li * li;
+            p.r += rr * rr + ri * ri;
+            p.m += pm;
+            p.s += sR[k] * sR[k] + sI[k] * sI[k];
+        }
+        return p;
+    };
+
+    // ---- band levels for the three detector signals ----
     const float norm = 4.0f / ((float) n * (float) n); // one-sided power -> mean square (sqrt-Hann)
     const int nb = layout.numBands;
-    float total = 0.0f;
     for (int b = 0; b < nb; ++b)
-        level[(size_t) b] = -120.0f;
-    for (int c = 0; c < chans; ++c)
     {
-        if (! processed[c])
-            continue;
-        float t = 0.0f;
-        for (int k = 1; k < half; ++k)
-            t += re[c][(size_t) k] * re[c][(size_t) k] + im[c][(size_t) k] * im[c][(size_t) k];
-        total = std::max (total, t * norm);
-        for (int b = 0; b < nb; ++b)
-        {
-            float p = 0.0f;
-            for (int k = bandBinLo[(size_t) b]; k <= bandBinHi[(size_t) b]; ++k)
-                p += re[c][(size_t) k] * re[c][(size_t) k] + im[c][(size_t) k] * im[c][(size_t) k];
-            level[(size_t) b] = std::max (level[(size_t) b], 10.0f * std::log10 (p * norm + 1e-12f));
-        }
+        const Pow p = power (bandBinLo[(size_t) b], bandBinHi[(size_t) b]);
+        level[(size_t) Det::LR][(size_t) b] = toDb (std::max (p.l, p.r) * norm);
+        level[(size_t) Det::M][(size_t) b] = toDb (p.m * norm);
+        level[(size_t) Det::S][(size_t) b] = toDb (p.s * norm);
     }
-    const float broadbandDb = 10.0f * std::log10 (total + 1e-12f);
+    const Pow all = power (1, half - 1);
+    const float broadbandDb = toDb (std::max (all.l, all.r) * norm);
     const bool silent = broadbandDb < kSilenceDb;
     if (! silent)
     {
@@ -394,29 +405,23 @@ void Engine::processFrame (bool bypass)
         learnedSec += hopSec;
     }
 
-    // ---- learning ----
+    // ---- learning (always on the 32 1/6-octave profile bands, all three signals) ----
     if (learnRequested.exchange (false))
     {
         learning = true;
         learnTime = 0.0f;
         learnFrames = 0;
-        learnSum.fill (0.0);
+        for (auto& d : learnSum)
+            d.fill (0.0);
     }
     if (learning && ! silent)
     {
         for (int k = 0; k < kProfileBands; ++k)
         {
-            float lv = -120.0f;
-            for (int c = 0; c < chans; ++c)
-            {
-                if (! processed[c])
-                    continue;
-                float p = 0.0f;
-                for (int bin = profBinLo[(size_t) k]; bin <= profBinHi[(size_t) k]; ++bin)
-                    p += re[c][(size_t) bin] * re[c][(size_t) bin] + im[c][(size_t) bin] * im[c][(size_t) bin];
-                lv = std::max (lv, 10.0f * std::log10 (p * norm + 1e-12f));
-            }
-            learnSum[(size_t) k] += lv;
+            const Pow p = power (profBinLo[(size_t) k], profBinHi[(size_t) k]);
+            learnSum[(size_t) Det::LR][(size_t) k] += toDb (std::max (p.l, p.r) * norm);
+            learnSum[(size_t) Det::M][(size_t) k] += toDb (p.m * norm);
+            learnSum[(size_t) Det::S][(size_t) k] += toDb (p.s * norm);
         }
         ++learnFrames;
         learnTime += hopSec;
@@ -425,140 +430,187 @@ void Engine::processFrame (bool bypass)
             finishLearning();
     }
 
-    // ---- reference (usual level) per band ----
+    // ---- reference (usual level) per band and signal ----
     const float aLong = std::exp (-hopSec / kLongTauSec);
-    for (int b = 0; b < nb; ++b)
-    {
-        float& rf = ref[(size_t) b];
-        const float lvl = level[(size_t) b];
-        switch (settings.reference)
+    for (int d = 0; d < kNumDet; ++d)
+        for (int b = 0; b < nb; ++b)
         {
-            case Reference::Auto:
+            float& rf = ref[(size_t) d][(size_t) b];
+            const float lvl = level[(size_t) d][(size_t) b];
+            switch (settings.reference)
             {
-                const float expected = longRmsDb + modelRelativeDb (layout.center (b), layout.bandsPerOctave);
-                if (! silent)
-                    rf = lvl + aLong * (rf - lvl);
-                rf = std::clamp (rf, expected - kMaxDeviationDb, expected + kMaxDeviationDb);
-                break;
-            }
-            case Reference::Learned:
-                rf = std::isnan (frozen[(size_t) b]) ? model[(size_t) b] : frozen[(size_t) b];
-                break;
-            case Reference::Fixed:
-            default:
-                rf = model[(size_t) b];
-                break;
-        }
-    }
-
-    // ---- how far each band sticks out: blend of "above usual" and "above neighbours" ----
-    const float s = pct (settings.selectivity);
-    const int w = layout.bandsPerOctave; // +-1 octave
-    for (int b = 0; b < nb; ++b)
-    {
-        const float oT = level[(size_t) b] - ref[(size_t) b];
-        float oN = 0.0f;
-        if (s > 0.0f)
-        {
-            float sum = 0.0f;
-            int cnt = 0;
-            for (int j = std::max (0, b - w); j <= std::min (nb - 1, b + w); ++j)
-                if (j != b)
+                case Reference::Auto:
                 {
-                    sum += level[(size_t) j];
-                    ++cnt;
+                    const float expected = longRmsDb + modelRelativeDb (layout.center (b), layout.bandsPerOctave)
+                                           + (d == (int) Det::S ? kSideModelOffsetDb : 0.0f);
+                    if (! silent)
+                        rf = lvl + aLong * (rf - lvl);
+                    rf = std::clamp (rf, expected - kMaxDeviationDb, expected + kMaxDeviationDb);
+                    break;
                 }
-            // Neighbours are never taken as quieter than 12 dB below this band's usual level,
-            // so a quiet sound in otherwise silent highs is not treated as "sticking out".
-            const float neighbours = cnt > 0 ? std::max (sum / (float) cnt, ref[(size_t) b] - 12.0f) : level[(size_t) b];
-            oN = level[(size_t) b] - neighbours;
+                case Reference::Learned:
+                {
+                    const float fz = frozen[(size_t) d][(size_t) b];
+                    rf = std::isnan (fz) ? model[(size_t) d][(size_t) b] : fz;
+                    break;
+                }
+                case Reference::Fixed:
+                default:
+                    rf = model[(size_t) d][(size_t) b];
+                    break;
+            }
         }
-        over[(size_t) b] = (1.0f - s) * oT + s * oN;
-    }
 
+    // ---- detection and gain reduction, Mid and Side slots ----
+    const float sel = pct (settings.selectivity);
+    const int w = layout.bandsPerOctave; // neighbours: +-1 octave
+    for (int slot = 0; slot < 2; ++slot)
+        for (int b = 0; b < nb; ++b)
+        {
+            const auto& p = plan.slot (slot, b);
+            float& e = env[(size_t) slot][(size_t) b];
+            float& g = gr[(size_t) slot][(size_t) b];
+            if (p.owner < 0 || (slot == 1 && ! stereo))
+            {
+                e = kEnvStartDb;
+                g = 0.0f;
+                continue;
+            }
+            const auto& lv = level[(size_t) p.det];
+            const float rf = ref[(size_t) p.det][(size_t) b];
+            const float oT = lv[(size_t) b] - rf;
+            float oN = 0.0f;
+            if (sel > 0.0f)
+            {
+                float sum = 0.0f;
+                int cnt = 0;
+                for (int j = std::max (0, b - w); j <= std::min (nb - 1, b + w); ++j)
+                    if (j != b)
+                    {
+                        sum += lv[(size_t) j];
+                        ++cnt;
+                    }
+                // Neighbours are never taken as quieter than 12 dB below this band's usual level,
+                // so a quiet sound in otherwise silent highs is not treated as "sticking out".
+                const float neighbours = cnt > 0 ? std::max (sum / (float) cnt, rf - 12.0f) : lv[(size_t) b];
+                oN = lv[(size_t) b] - neighbours;
+            }
+            const float o = (1.0f - sel) * oT + sel * oN;
+            const float tau = (o > e ? p.attackMs : p.releaseMs) * 0.001f;
+            e = o + std::exp (-hopSec / tau) * (e - o);
+            g = silent ? 0.0f : std::min (compressorReductionDb (e - p.marginDb, p.ratio, p.kneeDb), settings.rangeDb);
+        }
+
+    // ---- meters ----
     for (int b = 0; b < nb; ++b)
     {
-        const auto& p = plan[(size_t) b];
-        const float o = over[(size_t) b];
-        float& e = env[(size_t) b];
-        const float attack = p.owner >= 0 ? p.attackMs : 1.0f;
-        const float release = p.owner >= 0 ? p.releaseMs : 50.0f;
-        const float tau = (o > e ? attack : release) * 0.001f;
-        e = o + std::exp (-hopSec / tau) * (e - o);
-
-        float g = 0.0f;
-        if (p.owner >= 0 && ! silent)
-            g = std::min (compressorReductionDb (e - p.marginDb, p.ratio, p.kneeDb), settings.rangeDb);
-        gr[(size_t) b] = g;
-        meters.overDb[(size_t) b].store (silent ? -100.0f : e, std::memory_order_relaxed);
-        meters.grDb[(size_t) b].store (bypass ? 0.0f : g, std::memory_order_relaxed);
+        int best = -1;
+        float bestOver = -1.0e9f;
+        for (int slot = 0; slot < (stereo ? 2 : 1); ++slot)
+        {
+            const auto& p = plan.slot (slot, b);
+            if (p.owner >= 0 && env[(size_t) slot][(size_t) b] - p.marginDb > bestOver)
+            {
+                bestOver = env[(size_t) slot][(size_t) b] - p.marginDb;
+                best = slot;
+            }
+        }
+        if (best >= 0)
+        {
+            const auto& p = plan.slot (best, b);
+            meters.overDb[(size_t) b].store (silent ? -100.0f : env[(size_t) best][(size_t) b], std::memory_order_relaxed);
+            meters.marginDb[(size_t) b].store (p.marginDb, std::memory_order_relaxed);
+            meters.owner[(size_t) b].store (p.owner, std::memory_order_relaxed);
+        }
+        else
+        {
+            // No target here: show how far the L/R level is above its usual level.
+            meters.overDb[(size_t) b].store (silent ? -100.0f : level[0][(size_t) b] - ref[0][(size_t) b], std::memory_order_relaxed);
+            meters.owner[(size_t) b].store (-1, std::memory_order_relaxed);
+        }
+        meters.grDb[(size_t) b].store (bypass ? 0.0f : std::max (gr[0][(size_t) b], gr[1][(size_t) b]), std::memory_order_relaxed);
     }
     meters.learnedSeconds.store (learnedSec, std::memory_order_relaxed);
 
-    // ---- per-bin gains ----
-    cpDb[0] = 0.0f;
+    // ---- per-bin gains for Mid and Side ----
+    cpDbM[0] = cpDbS[0] = 0.0f;
     for (int b = 0; b < nb; ++b)
-        cpDb[(size_t) b + 1] = gr[(size_t) b];
-    cpDb[(size_t) nb + 1] = 0.0f;
+    {
+        cpDbM[(size_t) b + 1] = gr[0][(size_t) b];
+        cpDbS[(size_t) b + 1] = gr[1][(size_t) b];
+    }
+    cpDbM[(size_t) nb + 1] = cpDbS[(size_t) nb + 1] = 0.0f;
 
+    const auto& selFocus = settings.focus[(size_t) std::clamp (settings.selected, 0, kNumFocus - 1)];
+    const float soloM = selFocus.channel == ChannelMode::Side ? 0.0f : 1.0f;
+    const float soloS = selFocus.channel == ChannelMode::Mid ? 0.0f : 1.0f;
     const float mix = pct (settings.mix);
     const float out = dbToGain (settings.outputDb);
     for (int k = 0; k <= half; ++k)
     {
-        float reduction = 0.0f;
+        float redM = 0.0f, redS = 0.0f;
         const int seg = binSeg[(size_t) k];
         if (seg >= 0)
-            reduction = cpDb[(size_t) seg] + binT[(size_t) k] * (cpDb[(size_t) seg + 1] - cpDb[(size_t) seg]);
-        const float g = 1.0f - mix * (1.0f - dbToGain (-reduction)); // true dry/wet in the gain
-        float gp, go;
+        {
+            const float t = binT[(size_t) k];
+            redM = cpDbM[(size_t) seg] + t * (cpDbM[(size_t) seg + 1] - cpDbM[(size_t) seg]);
+            redS = cpDbS[(size_t) seg] + t * (cpDbS[(size_t) seg + 1] - cpDbS[(size_t) seg]);
+        }
+        const float gm = 1.0f - mix * (1.0f - dbToGain (-redM)); // true dry/wet in the gain
+        const float gs = 1.0f - mix * (1.0f - dbToGain (-redS));
+        float GM, GS;
         if (bypass)
         {
-            gp = go = 1.0f;
+            GM = GS = 1.0f;
         }
         else
         {
             switch (settings.listen)
             {
-                case Listen::Delta:  gp = (1.0f - g) * out; go = 0.0f; break;
-                case Listen::Filter: gp = binSolo[(size_t) k] * out; go = 0.0f; break;
+                case Listen::Delta:  GM = (1.0f - gm) * out; GS = (1.0f - gs) * out; break;
+                case Listen::Filter: GM = binSolo[(size_t) k] * soloM * out; GS = binSolo[(size_t) k] * soloS * out; break;
                 case Listen::Normal:
-                default:             gp = g * binShelf[(size_t) k] * out; go = binShelf[(size_t) k] * out; break;
+                default:             GM = gm * binShelf[(size_t) k] * out; GS = gs * binShelf[(size_t) k] * out; break;
             }
         }
-        binGain[(size_t) k] = gp;
-        binGainOther[(size_t) k] = go;
+        binGainM[(size_t) k] = GM;
+        binGainS[(size_t) k] = GS;
     }
 
-    // ---- spectrum display (every other frame) ----
+    // ---- spectrum display (every other frame), in L/R terms ----
     if ((++frameCounter & 1) == 0)
     {
         const float specNorm = 1.0f / (0.3183f * (float) n * 0.3183f * (float) n); // full-scale sine peak -> 0 dB
         for (int i = 0; i < kSpecPoints; ++i)
         {
             float pin = 0.0f, pout = 0.0f;
-            for (int c = 0; c < chans; ++c)
+            for (int k = specLo[(size_t) i]; k <= specHi[(size_t) i]; ++k)
             {
-                if (! processed[c])
-                    continue;
-                float a = 0.0f, o = 0.0f;
-                for (int k = specLo[(size_t) i]; k <= specHi[(size_t) i]; ++k)
+                const float gM = binGainM[(size_t) k], gS = binGainS[(size_t) k];
+                if (stereo)
                 {
-                    const float p = re[c][(size_t) k] * re[c][(size_t) k] + im[c][(size_t) k] * im[c][(size_t) k];
-                    a = std::max (a, p);
-                    o = std::max (o, p * binGain[(size_t) k] * binGain[(size_t) k]);
+                    const float lr = mr[k] + sR[k], li = mi[k] + sI[k], rr = mr[k] - sR[k], ri = mi[k] - sI[k];
+                    pin = std::max (pin, std::max (lr * lr + li * li, rr * rr + ri * ri));
+                    const float olr = gM * mr[k] + gS * sR[k], oli = gM * mi[k] + gS * sI[k];
+                    const float orr = gM * mr[k] - gS * sR[k], ori = gM * mi[k] - gS * sI[k];
+                    pout = std::max (pout, std::max (olr * olr + oli * oli, orr * orr + ori * ori));
                 }
-                pin = std::max (pin, a);
-                pout = std::max (pout, o);
+                else
+                {
+                    const float pm = mr[k] * mr[k] + mi[k] * mi[k];
+                    pin = std::max (pin, pm);
+                    pout = std::max (pout, pm * gM * gM);
+                }
             }
-            meters.specIn[(size_t) i].store (10.0f * std::log10 (pin * specNorm + 1e-12f), std::memory_order_relaxed);
-            meters.specOut[(size_t) i].store (10.0f * std::log10 (pout * specNorm + 1e-12f), std::memory_order_relaxed);
+            meters.specIn[(size_t) i].store (toDb (pin * specNorm), std::memory_order_relaxed);
+            meters.specOut[(size_t) i].store (toDb (pout * specNorm), std::memory_order_relaxed);
         }
     }
 
     // ---- apply, inverse transform, overlap-add ----
     for (int c = 0; c < chans; ++c)
     {
-        const auto& gains = processed[c] ? binGain : binGainOther;
+        const auto& gains = c == 0 ? binGainM : binGainS;
         auto* R = re[c].data();
         auto* I = im[c].data();
         R[0] *= gains[0];

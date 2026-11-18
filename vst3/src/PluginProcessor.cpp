@@ -54,6 +54,14 @@ const std::vector<Preset>& presets()
               s.shelfHz = 9000;
               s.shelfDb = -3;
           } },
+        { "Vocal on Mid, cymbals on Side", [] (Settings& s) {
+              s.focus[0] = fs (0, false, 40, 40);
+              s.focus[1] = fs (1, true, 60, 65, 5000, 11000);
+              s.focus[1].channel = ChannelMode::Mid;
+              s.focus[2] = fs (2, true, 60, 65, 7000, 16000);
+              s.focus[2].channel = ChannelMode::Side;
+              s.selected = 1;
+          } },
         { "Nasal mids (extended range)", [] (Settings& s) {
               s.extendedRange = true;
               s.focus[3] = fs (3, true, 55, 50, 600, 1200);
@@ -144,7 +152,6 @@ void SasariProcessor::setCurrentProgram (int index)
     const auto current = raw.read();
     s.bandsPerOctave = current.bandsPerOctave; // device-level choices are kept
     s.reference = current.reference;
-    s.channels = current.channels;
     s.extendedRange = current.extendedRange;
     presets()[(size_t) index].apply (s);
 
@@ -158,6 +165,7 @@ void SasariProcessor::setCurrentProgram (int index)
         setParam (id (f, "high"), fs.highHz);
         setParam (id (f, "proc"), fs.processing);
         setParam (id (f, "int"), fs.intensity);
+        setParam (id (f, "ch"), (float) fs.channel);
     }
     setParam (customAttack, s.focus[(size_t) kCustom].attackMs);
     setParam (customRelease, s.focus[(size_t) kCustom].releaseMs);
@@ -220,9 +228,10 @@ void SasariProcessor::getStateInformation (juce::MemoryBlock& destData)
     const auto profile = engine.getProfile();
     if (profile.valid)
     {
-        juce::StringArray values;
-        for (float v : profile.db)
-            values.add (std::isnan (v) ? "nan" : juce::String (v, 3));
+        juce::StringArray values; // L/R, Mid, Side: 3 x 32 values
+        for (const auto& det : profile.db)
+            for (float v : det)
+                values.add (std::isnan (v) ? "nan" : juce::String (v, 3));
         state.setProperty ("learnedProfile", values.joinIntoString (" "), nullptr);
     }
 
@@ -255,11 +264,16 @@ void SasariProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (text.isNotEmpty())
     {
         auto tokens = juce::StringArray::fromTokens (text, " ", "");
-        if (tokens.size() == sasari::kProfileBands)
+        const int per = sasari::kProfileBands;
+        if (tokens.size() == per * sasari::kNumDet)
         {
             profile.valid = true;
-            for (int k = 0; k < sasari::kProfileBands; ++k)
-                profile.db[(size_t) k] = tokens[k] == "nan" ? std::numeric_limits<float>::quiet_NaN() : tokens[k].getFloatValue();
+            for (int d = 0; d < sasari::kNumDet; ++d)
+                for (int k = 0; k < per; ++k)
+                {
+                    const auto& t = tokens[d * per + k];
+                    profile.db[(size_t) d][(size_t) k] = t == "nan" ? std::numeric_limits<float>::quiet_NaN() : t.getFloatValue();
+                }
         }
     }
     engine.setProfile (profile);

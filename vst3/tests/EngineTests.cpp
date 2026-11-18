@@ -282,9 +282,10 @@ void testFilterSolosSelectedTarget()
     check (std::abs (hi - 20 * std::log10 (0.3)) < 1.0, "filter passes the target band unprocessed");
 }
 
-void testMidSideModes()
+void testPerTargetChannels()
 {
     const double sr = 48000;
+    // 7 kHz only in the side signal (L = -R), 500 Hz in the middle.
     auto sideHigh = [] (int, double t, float& l, float& r) {
         const double m = 0.3 * std::sin (2 * kPi * 500 * t);
         const double s = 0.3 * std::sin (2 * kPi * 7000 * t);
@@ -292,16 +293,63 @@ void testMidSideModes()
         r = (float) (m - s);
     };
     Settings s = vocalOnly (100, 100);
-    s.channels = ChannelMode::Mid;
+    s.focus[1].channel = ChannelMode::Mid;
     auto mid = run (s, sr, 2.0, sideHigh);
-    s.channels = ChannelMode::Side;
+    s.focus[1].channel = ChannelMode::Side;
     auto side = run (s, sr, 2.0, sideHigh);
     auto ref = run (allOff(), sr, 2.0, sideHigh);
     const double midHi = toneDb (mid.l, sr, 7000, 1, 2) - toneDb (ref.l, sr, 7000, 1, 2);
     const double sideHi = toneDb (side.l, sr, 7000, 1, 2) - toneDb (ref.l, sr, 7000, 1, 2);
-    std::printf ("  side-only 7k: Mid mode %.2f dB, Side mode %.1f dB\n", midHi, sideHi);
-    check (std::abs (midHi) < 0.5, "Mid mode leaves side content alone");
-    check (sideHi < -10, "Side mode reduces side content");
+    std::printf ("  side-only 7k: Mid target %.2f dB, Side target %.1f dB\n", midHi, sideHi);
+    check (std::abs (midHi) < 0.5, "Mid target leaves side content alone");
+    check (sideHi < -10, "Side target reduces side content");
+
+    // Vocal on Mid and hi-hat on Side at the same time, overlapping at 9 kHz:
+    // a centred 9 kHz "sibilant" and a wide 9.3 kHz "cymbal" are both pulled down,
+    // and a centred 13 kHz tone (hi-hat range, but in the middle) is left alone.
+    auto mixGen = [] (int, double t, float& l, float& r) {
+        const double m = 0.3 * std::sin (2 * kPi * 9000 * t) + 0.2 * std::sin (2 * kPi * 13000 * t) + 0.2 * std::sin (2 * kPi * 500 * t);
+        const double sd = 0.3 * std::sin (2 * kPi * 9300 * t);
+        l = (float) (m + sd);
+        r = (float) (m - sd);
+    };
+    Settings both = allOff();
+    both.focus[1] = FocusSettings { true, 5000.0f, 10000.0f, 100.0f, 100.0f };
+    both.focus[1].channel = ChannelMode::Mid;
+    both.focus[2] = FocusSettings { true, 8000.0f, 16000.0f, 100.0f, 100.0f };
+    both.focus[2].channel = ChannelMode::Side;
+    auto out = run (both, sr, 2.0, mixGen);
+    auto bref = run (allOff(), sr, 2.0, mixGen);
+    auto midOf = [] (const Stereo& x) { std::vector<float> m (x.l.size()); for (size_t i = 0; i < m.size(); ++i) m[i] = 0.5f * (x.l[i] + x.r[i]); return m; };
+    auto sideOf = [] (const Stereo& x) { std::vector<float> m (x.l.size()); for (size_t i = 0; i < m.size(); ++i) m[i] = 0.5f * (x.l[i] - x.r[i]); return m; };
+    const auto om = midOf (out), os = sideOf (out), rm = midOf (bref), rs = sideOf (bref);
+    const double m9 = toneDb (om, sr, 9000, 1, 2) - toneDb (rm, sr, 9000, 1, 2);
+    const double s93 = toneDb (os, sr, 9300, 1, 2) - toneDb (rs, sr, 9300, 1, 2);
+    const double m13 = toneDb (om, sr, 13000, 1, 2) - toneDb (rm, sr, 13000, 1, 2);
+    const double m500 = toneDb (om, sr, 500, 1, 2) - toneDb (rm, sr, 500, 1, 2);
+    std::printf ("  vocal=Mid + hi-hat=Side: mid 9k %.1f dB, side 9.3k %.1f dB, mid 13k %.2f dB, mid 500 %.2f dB\n", m9, s93, m13, m500);
+    check (m9 < -6, "centred sibilant reduced by the Mid vocal target");
+    check (s93 < -6, "wide cymbal reduced by the Side hi-hat target in the same band");
+    check (std::abs (m13) < 0.5, "centred content in the hi-hat range untouched by a Side target");
+    check (std::abs (m500) < 0.5, "500 Hz untouched");
+}
+
+void testStereoTargetKeepsTheImage()
+{
+    // A loud 7 kHz only on the left: a stereo (linked) target must reduce both sides equally,
+    // so a quiet 7 kHz on the right drops by the same amount (no image shift).
+    const double sr = 48000;
+    auto gen = [] (int, double t, float& l, float& r) {
+        l = (float) (0.3 * std::sin (2 * kPi * 7000 * t) + 0.2 * std::sin (2 * kPi * 500 * t));
+        r = (float) (0.03 * std::sin (2 * kPi * 7000 * t) + 0.2 * std::sin (2 * kPi * 500 * t));
+    };
+    auto out = run (vocalOnly (100, 100), sr, 2, gen);
+    auto ref = run (allOff(), sr, 2, gen);
+    const double dl = toneDb (out.l, sr, 7000, 1, 2) - toneDb (ref.l, sr, 7000, 1, 2);
+    const double dr = toneDb (out.r, sr, 7000, 1, 2) - toneDb (ref.r, sr, 7000, 1, 2);
+    std::printf ("  stereo target, loud left: left %.1f dB, right %.1f dB\n", dl, dr);
+    check (dl < -6, "left reduced");
+    check (std::abs (dl - dr) < 0.5, "right reduced by the same amount (image kept)");
 }
 
 void testAutoLevelFollowsTheMusic()
@@ -357,16 +405,28 @@ void testPlanAndLayouts()
     check (std::abs (third.edges[0] - 1587.4f) < 0.5f && std::abs (third.edges[10] - 16000.0f) < 0.5f, "standard edges");
     check (std::abs (ext3.edges[0] - 396.9f) < 0.5f && std::abs (ext6.edges[32] - 16000.0f) < 0.5f, "extended edges");
     Settings s;
-    auto plan = makePlan (s, third);
+    const auto plan = makePlan (s, third).mid;
     check (plan[2].owner == 0 && plan[4].owner == 0, "guitar bands");
     check (plan[5].owner == 1 && plan[7].owner == 1, "vocal bands (vocal wins the overlap)");
     check (plan[8].owner == 2 && plan[9].owner == 2, "hihat bands");
     check (plan[0].owner == -1, "lowest band untouched");
     check (plan[9].attackMs < plan[8].attackMs, "higher band reacts faster");
+    const auto both = makePlan (s, third);
+    bool linked = true;
+    for (int b = 0; b < third.numBands; ++b)
+        linked = linked && both.mid[(size_t) b].owner == both.side[(size_t) b].owner && both.mid[(size_t) b].det == Det::LR;
+    check (linked, "stereo targets claim Mid and Side alike and listen to L/R");
+    Settings ms = s;
+    ms.focus[1].channel = ChannelMode::Mid;
+    ms.focus[2].channel = ChannelMode::Side;
+    const auto split = makePlan (ms, third);
+    check (split.mid[7].owner == 1 && split.side[7].owner == 2, "overlapping band: vocal on Mid, hi-hat on Side");
+    check (split.mid[9].owner == -1 && split.side[5].owner == -1, "Mid / Side targets leave the other signal alone");
+    check (split.mid[7].det == Det::M && split.side[7].det == Det::S, "Mid / Side targets listen to their own signal");
     // Custom target: only in the extended layout, with its own times.
     s.focus[3].enabled = true;
-    check (makePlan (s, third)[0].owner == -1, "custom 600-1200 Hz is outside the standard layout");
-    auto ep = makePlan (s, ext3);
+    check (makePlan (s, third).mid[0].owner == -1, "custom 600-1200 Hz is outside the standard layout");
+    auto ep = makePlan (s, ext3).mid;
     int customBands = 0;
     for (int b = 0; b < ext3.numBands; ++b)
         if (ep[(size_t) b].owner == kCustom)
@@ -478,9 +538,9 @@ void testLearnFreezeAndRestore()
         check (r > -2, "restored profile used (1/" + std::to_string (perOct) + " oct): " + std::to_string (r));
     }
     bool allFinite = true;
-    for (float v : profile.db)
-        allFinite = allFinite && std::isfinite (v);
-    check (allFinite, "profile covers all 32 1/6-octave bands");
+    for (int k = 0; k < kProfileBands; ++k)
+        allFinite = allFinite && std::isfinite (profile.db[(size_t) Det::LR][(size_t) k]) && std::isfinite (profile.db[(size_t) Det::M][(size_t) k]);
+    check (allFinite, "profile covers all 32 1/6-octave bands (L/R and Mid)");
     // Also usable with the extended range (learned in the standard range).
     Engine e3;
     e3.prepare (sr, 2);
@@ -542,7 +602,8 @@ void testNoAllocationWhileProcessing()
         s.bandsPerOctave = (blk / 10) % 2 ? 6 : 3;
         s.extendedRange = (blk / 25) % 2;
         s.listen = (Listen) ((blk / 7) % 3);
-        s.channels = (ChannelMode) ((blk / 13) % 3);
+        for (int f = 0; f < kNumFocus; ++f)
+            s.focus[(size_t) f].channel = (ChannelMode) ((blk / 13 + f) % 3);
         s.reference = (Reference) ((blk / 17) % 3);
         s.selectivity = (float) ((blk * 7) % 101);
         s.focus[0].lowHz = 500.0f + (float) ((blk * 150) % 15000);
@@ -576,7 +637,8 @@ int main()
         { "mix 0 transparent", testMixZeroIsTransparent },
         { "delta = removed part", testDeltaIsWhatWasRemoved },
         { "filter solos target", testFilterSolosSelectedTarget },
-        { "mid/side modes", testMidSideModes },
+        { "per-target channels", testPerTargetChannels },
+        { "stereo target keeps the image", testStereoTargetKeepsTheImage },
         { "auto level", testAutoLevelFollowsTheMusic },
         { "mono", testMono },
         { "selectivity: steady resonance", testSelectivityCatchesSteadyResonance },

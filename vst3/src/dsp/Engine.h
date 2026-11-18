@@ -2,13 +2,13 @@
 
 // Spectral harshness suppressor (SPEC.md section 4).
 //
-// Short-time Fourier transform (sqrt-Hann, 75 % overlap). Frames are ~10.7 ms for the
-// standard analysis range (1.6-16 kHz) and ~21.3 ms for the extended range (400 Hz-16 kHz).
-// For every 1/3- or 1/6-octave band it measures how far the band sticks out, either above
-// its usual level, above its neighbours, or a blend of both (SELECTIVITY), follows that with
-// target-specific attack/release and turns only that band down while it sticks out.
-// The frame length is reported as latency, so the gain is in place the moment a sibilant
-// starts (lookahead).
+// Short-time Fourier transform (sqrt-Hann, 75 % overlap) of the Mid and Side signals. Frames
+// are ~10.7 ms for the standard analysis range (1.6-16 kHz) and ~21.3 ms for the extended range
+// (400 Hz-16 kHz). For every 1/3- or 1/6-octave band and for Mid and Side separately, the owning
+// target measures how far its signal sticks out (stereo targets listen to the louder of L/R,
+// Mid targets to the centre, Side targets to the width), follows that with its attack/release
+// and turns only that band of that signal down while it sticks out. The frame length is
+// reported as latency, so the gain is in place the moment a sibilant starts (lookahead).
 //
 // Real-time safe after prepare(): process() and setSettings() never allocate or lock,
 // including when the analysis range (and with it the frame size) changes.
@@ -37,7 +37,6 @@ public:
 
     /** Latency in samples (one frame); changes with the analysis range. */
     int latency() const { return n; }
-    /** Latency the engine would have for a given analysis range at the prepared sample rate. */
     int latencyFor (bool extendedRange) const { return extendedRange ? nLarge : nSmall; }
 
     /** Call from the audio thread before process() when settings may have changed. */
@@ -52,9 +51,10 @@ public:
     /** Start learning the usual levels for kLearnSeconds; the result is frozen afterwards. */
     void requestLearn() { learnRequested.store (true); }
 
+    /** Learned usual levels of the 32 1/6-octave bands, for L/R, Mid and Side (dBFS, NaN = unknown). */
     struct Profile
     {
-        std::array<float, kProfileBands> db {}; // 1/6-octave band levels (dBFS), NaN = unknown
+        std::array<std::array<float, kProfileBands>, kNumDet> db {};
         bool valid = false;
     };
     Profile getProfile() const;
@@ -64,11 +64,14 @@ public:
     struct Meters
     {
         std::atomic<int> numBands { 10 };
-        std::array<std::atomic<float>, kMaxBands> overDb {}; // how far the band sticks out (detector)
-        std::array<std::atomic<float>, kMaxBands> grDb {};   // current gain reduction
+        // Per band, for whichever of Mid / Side is closest to (or furthest over) its threshold:
+        std::array<std::atomic<float>, kMaxBands> overDb {};   // detector level (how far it sticks out)
+        std::array<std::atomic<float>, kMaxBands> marginDb {}; // its threshold
+        std::array<std::atomic<int>, kMaxBands> owner {};      // its target, -1 = none
+        std::array<std::atomic<float>, kMaxBands> grDb {};     // largest gain reduction of Mid / Side
         std::array<std::atomic<float>, kSpecPoints> specIn {}, specOut {}; // dB, 0 = full-scale sine
-        std::atomic<float> learnedSeconds { 0.0f };         // auto level
-        std::atomic<float> learnProgress { -1.0f };         // 0..1 while learning, -1 idle
+        std::atomic<float> learnedSeconds { 0.0f };            // auto level
+        std::atomic<float> learnProgress { -1.0f };            // 0..1 while learning, -1 idle
         std::atomic<bool> profileValid { false };
     };
     Meters meters;
@@ -94,16 +97,17 @@ private:
     const Fft* fft = &fftSmall;
     std::vector<float> windowSmall, windowLarge;
     const std::vector<float>* window = &windowSmall;
+    // Channel 0 = Mid, channel 1 = Side (for a mono input only channel 0 is used).
     std::vector<float> inBuf[2], outBuf[2], re[2], im[2];
 
     Settings settings;
     Layout layout;
-    std::array<BandPlan, kMaxBands> plan {};
+    Plan plan;
     int layoutPerOctave = 0;
-    bool layoutExtended = false;
 
-    // per band state (dB)
-    std::array<float, kMaxBands> env {}, ref {}, model {}, frozen {}, gr {}, level {}, over {};
+    using Bands = std::array<float, kMaxBands>;
+    std::array<Bands, kNumDet> level {}, ref {}, model {}, frozen {};
+    std::array<Bands, 2> env {}, gr {}; // per slot: 0 = Mid, 1 = Side
     float longRmsDb = kAssumedRmsDb;
     float learnedSec = 0.0f;
 
@@ -112,16 +116,16 @@ private:
     bool learning = false;
     float learnTime = 0.0f;
     int learnFrames = 0;
-    std::array<double, kProfileBands> learnSum {};
-    std::array<std::atomic<float>, kProfileBands> profileDb {};
+    std::array<std::array<double, kProfileBands>, kNumDet> learnSum {};
+    std::array<std::array<std::atomic<float>, kProfileBands>, kNumDet> profileDb {};
     std::array<int, kProfileBands> profBinLo {}, profBinHi {};
     std::atomic<int> profileVersion { 0 };
     int profileVersionSeen = -1;
 
     // per bin maps (sized for the large frame)
-    std::vector<float> binHz, binT, binShelf, binSolo, binGain, binGainOther;
+    std::vector<float> binHz, binT, binShelf, binSolo, binGainM, binGainS;
     std::vector<int> binSeg;
-    std::array<float, kMaxBands + 2> cpHz {}, cpDb {};
+    std::array<float, kMaxBands + 2> cpHz {}, cpDbM {}, cpDbS {};
     std::array<int, kMaxBands> bandBinLo {}, bandBinHi {};
     std::array<int, kSpecPoints> specLo {}, specHi {};
 };

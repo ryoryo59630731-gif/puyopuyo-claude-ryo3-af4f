@@ -25,7 +25,7 @@ inline juce::String id (int f, const char* what) { return juce::String (focusKey
 
 inline const juce::String selected { "selected" }, sharpness { "sharpness" }, mix { "mix" }, range { "range" },
     output { "output" }, selectivity { "selectivity" }, resolution { "resolution" }, analysis { "analysis" },
-    reference { "reference" }, listen { "listen" }, channels { "channels" }, shelfOn { "shelf_on" },
+    reference { "reference" }, listen { "listen" }, shelfOn { "shelf_on" },
     shelfFreq { "shelf_freq" }, shelfGain { "shelf_gain" }, customAttack { "custom_att" },
     customRelease { "custom_rel" };
 
@@ -68,6 +68,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                            NormalisableRange<float> (0.0f, 100.0f), fs.processing, pctAttr));
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "int"), 1 }, name + " Intensity",
                                                            NormalisableRange<float> (0.0f, 100.0f), fs.intensity, pctAttr));
+        layout.add (std::make_unique<AudioParameterChoice> (ParameterID { id (f, "ch"), 1 }, name + " Channel",
+                                                            StringArray { "Stereo", "Mid", "Side" }, (int) fs.channel));
     }
     const auto& c = d.focus[(size_t) kCustom];
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { customAttack, 1 }, "Custom Attack",
@@ -95,8 +97,6 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                         StringArray { "Fixed", "Auto", "Learned" }, (int) d.reference));
     layout.add (std::make_unique<AudioParameterChoice> (ParameterID { listen, 1 }, "Listen",
                                                         StringArray { "Normal", "Filter", "Delta" }, 0));
-    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { channels, 1 }, "Channels",
-                                                        StringArray { "Stereo", "Mid", "Side" }, 0));
     layout.add (std::make_unique<AudioParameterBool> (ParameterID { shelfOn, 1 }, "Shelf On", d.shelfOn));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { shelfFreq, 1 }, "Shelf Freq",
                                                        logRange (2000.0f, 16000.0f), d.shelfHz, hzAttr));
@@ -108,15 +108,15 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 /** Cached raw parameter pointers for lock-free reads on the audio thread. */
 struct Raw
 {
-    std::array<std::array<std::atomic<float>*, 5>, kNumFocus> focus {};
+    std::array<std::array<std::atomic<float>*, 6>, kNumFocus> focus {};
     std::atomic<float>*sel {}, *sharp {}, *mixP {}, *rangeP {}, *out {}, *selP {}, *res {}, *ana {}, *refP {},
-        *listenP {}, *chans {}, *shelfOnP {}, *shelfHz {}, *shelfDb {}, *att {}, *rel {};
+        *listenP {}, *shelfOnP {}, *shelfHz {}, *shelfDb {}, *att {}, *rel {};
 
     explicit Raw (juce::AudioProcessorValueTreeState& s)
     {
-        static const char* what[] = { "on", "low", "high", "proc", "int" };
+        static const char* what[] = { "on", "low", "high", "proc", "int", "ch" };
         for (int f = 0; f < kNumFocus; ++f)
-            for (int w = 0; w < 5; ++w)
+            for (int w = 0; w < 6; ++w)
                 focus[(size_t) f][(size_t) w] = s.getRawParameterValue (id (f, what[w]));
         sel = s.getRawParameterValue (selected);
         sharp = s.getRawParameterValue (sharpness);
@@ -128,7 +128,6 @@ struct Raw
         ana = s.getRawParameterValue (analysis);
         refP = s.getRawParameterValue (reference);
         listenP = s.getRawParameterValue (listen);
-        chans = s.getRawParameterValue (channels);
         shelfOnP = s.getRawParameterValue (shelfOn);
         shelfHz = s.getRawParameterValue (shelfFreq);
         shelfDb = s.getRawParameterValue (shelfGain);
@@ -148,6 +147,7 @@ struct Raw
             fs.highHz = p[2]->load();
             fs.processing = p[3]->load();
             fs.intensity = p[4]->load();
+            fs.channel = (ChannelMode) juce::jlimit (0, 2, (int) p[5]->load());
         }
         s.focus[(size_t) kCustom].attackMs = att->load();
         s.focus[(size_t) kCustom].releaseMs = rel->load();
@@ -161,7 +161,6 @@ struct Raw
         s.extendedRange = ana->load() > 0.5f;
         s.reference = (Reference) juce::jlimit (0, 2, (int) refP->load());
         s.listen = (Listen) juce::jlimit (0, 2, (int) listenP->load());
-        s.channels = (ChannelMode) juce::jlimit (0, 2, (int) chans->load());
         s.shelfOn = shelfOnP->load() > 0.5f;
         s.shelfHz = shelfHz->load();
         s.shelfDb = shelfDb->load();

@@ -207,13 +207,41 @@ void SpectrumDisplay::paint (juce::Graphics& g)
     g.fillRect (juce::Rectangle<float>::leftTopRightBottom (r.getX(), r.getY(), x (layout.lowLimit()), r.getBottom()));
     g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.highLimit()), r.getY(), r.getRight(), r.getBottom()));
 
+    bool anySplit = false;
     for (int b = 0; b < layout.numBands; ++b)
-        if (plan[(size_t) b].owner >= 0)
+    {
+        const int mo = plan.mid[(size_t) b].owner, so = plan.side[(size_t) b].owner;
+        anySplit = anySplit || mo != so;
+        const float l0 = x (layout.low (b)) + 0.5f, r0 = x (layout.high (b)) - 0.5f;
+        if (mo == so)
         {
-            g.setColour (Colours::focus (plan[(size_t) b].owner).withAlpha (0.13f));
-            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.low (b)) + 0.5f, r.getY(), x (layout.high (b)) - 0.5f, r.getBottom()));
+            if (mo >= 0)
+            {
+                g.setColour (Colours::focus (mo).withAlpha (0.13f));
+                g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l0, r.getY(), r0, r.getBottom()));
+            }
+            continue;
         }
+        // Different targets on Mid (lower half) and Side (upper half).
+        const float midY = r.getCentreY();
+        if (so >= 0)
+        {
+            g.setColour (Colours::focus (so).withAlpha (0.16f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l0, r.getY(), r0, midY));
+        }
+        if (mo >= 0)
+        {
+            g.setColour (Colours::focus (mo).withAlpha (0.16f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l0, midY, r0, r.getBottom()));
+        }
+    }
     drawFreqGrid (g, r, true);
+    if (anySplit)
+    {
+        g.setColour (juce::Colour (Colours::dim));
+        g.setFont (juce::FontOptions (10.0f));
+        g.drawText (jp ("色の上半分＝Side／下半分＝Mid"), r.withTrimmedRight (4).withHeight (14), juce::Justification::topRight);
+    }
     g.setColour (juce::Colour (Colours::stroke).withAlpha (0.6f));
     for (float db : { -20.0f, -40.0f, -60.0f, -80.0f })
         g.drawHorizontalLine ((int) y (db), r.getX(), r.getRight());
@@ -306,7 +334,7 @@ void ProminenceDisplay::paint (juce::Graphics& g)
 {
     const auto s = proc.currentSettings();
     const Layout layout (s.bandsPerOctave, s.extendedRange);
-    const auto plan = makePlan (s, layout);
+    auto& meters = proc.engine.meters;
     auto area = getLocalBounds().toFloat();
     g.setColour (juce::Colour (Colours::display));
     g.fillRoundedRectangle (area, 6.0f);
@@ -320,18 +348,19 @@ void ProminenceDisplay::paint (juce::Graphics& g)
     for (int b = 0; b < nb; ++b)
     {
         const float l = x (layout.low (b)) + 1.0f, rr = x (layout.high (b)) - 1.0f;
-        const int owner = plan[(size_t) b].owner;
+        const int owner = meters.owner[(size_t) b].load();
+        const float margin = meters.marginDb[(size_t) b].load();
         const float v = over[(size_t) b];
         if (v > -90.0f)
         {
-            const bool above = owner >= 0 && v >= plan[(size_t) b].marginDb;
+            const bool above = owner >= 0 && v >= margin;
             g.setColour (above ? Colours::focus (owner) : juce::Colour (Colours::dim).withAlpha (owner >= 0 ? 0.6f : 0.25f));
             g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l, y (v), rr, r.getBottom()));
         }
         if (owner >= 0)
         {
             g.setColour (juce::Colours::white.withAlpha (0.85f));
-            g.drawHorizontalLine ((int) y (plan[(size_t) b].marginDb), l, rr);
+            g.drawHorizontalLine ((int) y (margin), l, rr);
         }
     }
     g.setColour (juce::Colour (Colours::dim));
@@ -350,7 +379,6 @@ void HistoryDisplay::tick()
     image.moveImageSection (0, 0, 1, 0, w - 1, h);
     const auto s = proc.currentSettings();
     const Layout layout (s.bandsPerOctave, s.extendedRange);
-    const auto plan = makePlan (s, layout);
     auto& m = proc.engine.meters;
     const int nb = juce::jmin (layout.numBands, m.numBands.load());
     for (int py = 0; py < h; ++py)
@@ -361,8 +389,9 @@ void HistoryDisplay::tick()
             if (f >= layout.low (b) && f < layout.high (b))
             {
                 const float grv = m.grDb[(size_t) b].load();
-                if (grv > 0.2f && plan[(size_t) b].owner >= 0)
-                    c = Colours::focus (plan[(size_t) b].owner).interpolatedWith (juce::Colour (Colours::red), 0.5f)
+                const int owner = m.owner[(size_t) b].load();
+                if (grv > 0.2f && owner >= 0)
+                    c = Colours::focus (owner).interpolatedWith (juce::Colour (Colours::red), 0.5f)
                             .withAlpha (juce::jlimit (0.5f, 1.0f, 0.4f + grv / 10.0f));
                 break;
             }
@@ -492,6 +521,21 @@ SasariEditor::SasariEditor (SasariProcessor& p)
         body.addAndMakeVisible (targetButtons[f]);
     }
     body.addAndMakeVisible (targetOn);
+    const char* channelNames[] = { "ステレオ", "Mid", "Side" };
+    const char* channelTips[] = { "左右の大きい方で検出し、左右同じ量だけ下げます（定位は変わりません）",
+                                  "中央の音（リードボーカルなど）だけで検出し、中央だけを下げます",
+                                  "左右の広がり（ステレオのシンバル・ダブリングなど）だけで検出し、広がりだけを下げます" };
+    for (int i = 0; i < 3; ++i)
+    {
+        channelButtons[i].setButtonText (jp (channelNames[i]));
+        channelButtons[i].setTooltip (jp (channelTips[i]));
+        channelButtons[i].onClick = [this, i] { setChoice (params::id (attachedTarget, "ch"), i); };
+        body.addAndMakeVisible (channelButtons[i]);
+    }
+    channelLabel.setText (jp ("チャンネル"), juce::dontSendNotification);
+    channelLabel.setFont (juce::FontOptions (11.0f));
+    channelLabel.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
+    body.addAndMakeVisible (channelLabel);
     for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob, &sharpKnob, &mixKnob,
                      &rangeKnob, &outKnob, &selectivityKnob, &shelfFreqKnob, &shelfGainKnob })
         body.addAndMakeVisible (*k);
@@ -525,15 +569,13 @@ SasariEditor::SasariEditor (SasariProcessor& p)
     referenceBox.addItemList ({ jp ("固定の推定値"), jp ("オート（曲に追従）"), jp ("学習して固定") }, 1);
     resolutionBox.addItemList ({ jp ("1/3 オクターブ"), jp ("1/6 オクターブ") }, 1);
     analysisBox.addItemList ({ jp ("1.6〜16 kHz（遅延 11 ms）"), jp ("400 Hz〜16 kHz（21 ms）") }, 1);
-    channelsBox.addItemList ({ jp ("ステレオ（左右連動）"), jp ("Mid のみ（中央）"), jp ("Side のみ（左右）") }, 1);
     referenceAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::reference, referenceBox);
     resolutionAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::resolution, resolutionBox);
     analysisAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::analysis, analysisBox);
-    channelsAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, params::channels, channelsBox);
-    for (auto* b : { &referenceBox, &resolutionBox, &analysisBox, &channelsBox })
+    for (auto* b : { &referenceBox, &resolutionBox, &analysisBox })
         body.addAndMakeVisible (*b);
     const std::pair<juce::Label*, const char*> labels[] = {
-        { &referenceLabel, "基準レベル" }, { &resolutionLabel, "検出の細かさ" }, { &analysisLabel, "解析範囲" }, { &channelsLabel, "処理するチャンネル" }
+        { &referenceLabel, "基準レベル" }, { &resolutionLabel, "検出の細かさ" }, { &analysisLabel, "解析範囲" }
     };
     for (auto [l, text] : labels)
     {
@@ -618,7 +660,9 @@ void SasariEditor::timerCallback()
     const Layout layout (s.bandsPerOctave, s.extendedRange);
     for (int f = 0; f < kNumFocus; ++f)
     {
-        targetButtons[f].setButtonText (jp (targetName (f)) + "\n" + (s.focus[(size_t) f].enabled ? "ON" : "OFF"));
+        static const char* chShort[] = { "", " / Mid", " / Side" };
+        targetButtons[f].setButtonText (jp (targetName (f)) + "\n" + (s.focus[(size_t) f].enabled ? "ON" : "OFF")
+                                        + chShort[(int) s.focus[(size_t) f].channel]);
         targetButtons[f].setToggleState (f == s.selected, juce::dontSendNotification);
     }
     for (int i = 0; i < 3; ++i)
@@ -631,6 +675,12 @@ void SasariEditor::timerCallback()
     redoButton.setEnabled (proc.undoManager.canRedo());
 
     const auto& sf = s.focus[(size_t) s.selected];
+    for (int i = 0; i < 3; ++i)
+    {
+        channelButtons[i].setToggleState ((int) sf.channel == i, juce::dontSendNotification);
+        channelButtons[i].setColour (juce::TextButton::buttonOnColourId, Colours::focus (s.selected));
+        channelButtons[i].setEnabled (sf.enabled);
+    }
     for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob })
         k->slider.setEnabled (sf.enabled);
     rangeWarning.setVisible (sf.enabled && outsideLayout (sf, layout));
@@ -665,7 +715,7 @@ void SasariEditor::paintBody (juce::Graphics& g)
     g.drawText (jp ("刺さりを抑えるソフト"), 14, 8, 260, 28, juce::Justification::centredLeft);
     g.setColour (juce::Colour (Colours::dim));
     g.setFont (juce::FontOptions (10.0f));
-    g.drawText ("Sasari Osaeru 2.0  -  harshness / sibilance suppressor", 14, 34, 320, 14, juce::Justification::centredLeft);
+    g.drawText ("Sasari Osaeru 2.1  -  harshness / sibilance suppressor", 14, 34, 320, 14, juce::Justification::centredLeft);
 
     auto panel = [&] (juce::Rectangle<int> r, const juce::String& title) {
         g.setColour (juce::Colour (Colours::panel));
@@ -700,9 +750,12 @@ void SasariEditor::layoutBody()
 
     for (int f = 0; f < kNumFocus; ++f)
         targetButtons[f].setBounds (22 + f * 118, 410, 114, 40);
-    targetOn.setBounds (600, 412, 300, 28);
-    rangeWarning.setBounds (600, 442, 380, 32);
-    targetHint.setBounds (600, 476, 380, 100);
+    targetOn.setBounds (600, 410, 300, 26);
+    channelLabel.setBounds (600, 440, 70, 24);
+    for (int i = 0; i < 3; ++i)
+        channelButtons[i].setBounds (672 + i * 92, 438, 90, 28);
+    rangeWarning.setBounds (600, 470, 380, 30);
+    targetHint.setBounds (600, 500, 380, 76);
     const int ky = 460;
     Knob* targetKnobs[] = { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob };
     for (int i = 0; i < 6; ++i)
@@ -723,10 +776,8 @@ void SasariEditor::layoutBody()
     resolutionBox.setBounds (cx + cw, 610, cw - 6, 24);
     analysisLabel.setBounds (cx, 638, cw, 14);
     analysisBox.setBounds (cx, 652, cw - 6, 24);
-    channelsLabel.setBounds (cx + cw, 638, cw, 14);
-    channelsBox.setBounds (cx + cw, 652, cw - 6, 24);
-    learnButton.setBounds (cx, 686, 120, 28);
-    learnStatus.setBounds (cx + 126, 686, 250, 28);
+    learnButton.setBounds (cx + cw, 650, 120, 28);
+    learnStatus.setBounds (cx, 684, 2 * cw, 28);
 }
 
 void SasariEditor::resized()

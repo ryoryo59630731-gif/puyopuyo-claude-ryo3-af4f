@@ -141,8 +141,12 @@ int main (int argc, char** argv)
         check (std::abs (value (q, mix) - 70.0f) < 0.01f, "parameters restored");
         const auto prof = q.engine.getProfile();
         bool same = prof.valid;
-        for (int k = 0; k < sasari::kProfileBands; ++k)
-            same = same && std::abs (prof.db[(size_t) k] - savedProfile.db[(size_t) k]) < 0.01f;
+        for (int d = 0; d < sasari::kNumDet; ++d)
+            for (int k = 0; k < sasari::kProfileBands; ++k)
+            {
+                const float x = prof.db[(size_t) d][(size_t) k], y = savedProfile.db[(size_t) d][(size_t) k];
+                same = same && ((std::isnan (x) && std::isnan (y)) || std::abs (x - y) < 0.01f);
+            }
         check (same, "learned profile restored with the project");
         q.switchToSlot (1);
         check (std::abs (value (q, mix) - 30.0f) < 0.01f, "A/B slots restored with the project");
@@ -151,6 +155,14 @@ int main (int argc, char** argv)
     // ---- presets ----
     std::printf ("[presets]\n");
     p.setCurrentProgram (6);
+    check ((int) value (p, id (1, "ch")) == (int) sasari::ChannelMode::Mid && (int) value (p, id (2, "ch")) == (int) sasari::ChannelMode::Side,
+           "preset sets per-target channels (vocal Mid, hi-hat Side)");
+    {
+        const auto st = p.currentSettings();
+        check (st.focus[1].channel == sasari::ChannelMode::Mid && st.focus[2].channel == sasari::ChannelMode::Side,
+               "per-target channels reach the engine settings");
+    }
+    p.setCurrentProgram (7);
     check (value (p, id (3, "on")) > 0.5f && value (p, analysis) > 0.5f, "nasal preset: custom target + extended range");
     process (p, music, 0.2);
     juce::MessageManager::getInstance()->runDispatchLoopUntil (100);
@@ -196,6 +208,10 @@ int main (int argc, char** argv)
         set (p, listen, 0.0f);
         juce::MessageManager::getInstance()->runDispatchLoopUntil (4000);
         save ("editor_custom.png");
+        p.setCurrentProgram (6); // vocal on Mid, cymbals on Side
+        set (p, analysis, 0.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (4000);
+        save ("editor_midside.png");
     }
     editor->setSize (1300, 962);
     check (std::abs (p.editorScale - 1.3f) < 0.01f, "editor scales and remembers its size");

@@ -106,8 +106,8 @@ int main (int argc, char** argv)
         return 1;
 
     check (plugin->getTotalNumInputChannels() == 2 && plugin->getTotalNumOutputChannels() == 2, "stereo in/out");
-    check (plugin->getParameters().size() >= 36, "parameters: " + juce::String (plugin->getParameters().size()));
-    check (plugin->getNumPrograms() == 7, "7 factory presets");
+    check (plugin->getParameters().size() >= 39, "parameters: " + juce::String (plugin->getParameters().size()));
+    check (plugin->getNumPrograms() == 8, "8 factory presets");
 
     for (double sr : { 44100.0, 48000.0, 96000.0 })
     {
@@ -184,7 +184,7 @@ int main (int argc, char** argv)
     check (plugin->getLatencySamples() == 512, "latency back to 512");
 
     // Custom target in the extended range reduces a loud 600 Hz tone (preset "Nasal mids").
-    plugin->setCurrentProgram (6);
+    plugin->setCurrentProgram (7);
     check (findParam (*plugin, "Custom On")->getValue() > 0.5f && findParam (*plugin, "Analysis Range")->getValue() > 0.5f,
            "nasal preset enables the custom target and the extended range");
 
