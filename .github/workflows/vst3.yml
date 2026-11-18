@@ -48,7 +48,7 @@ jobs:
       - name: Build
         run: cmake --build build --config Release --parallel 4
 
-      - name: Unit, processor and host tests (Linux: on a virtual display)
+      - name: "Unit, processor and host tests (Linux, virtual display)"
         if: runner.os == 'Linux'
         run: xvfb-run -a ctest --test-dir build -C Release --output-on-failure
 
