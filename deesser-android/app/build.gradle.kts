@@ -12,8 +12,8 @@ android {
         // DynamicsProcessing (the effect this app is built on) exists from Android 9 (API 28).
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildTypes {

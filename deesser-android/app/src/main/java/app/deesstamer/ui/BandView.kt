@@ -23,8 +23,8 @@ object FocusColors {
 }
 
 /**
- * Frequency strip (log scale, 1–20 kHz) showing the 1/3-octave analysis bands, which target
- * controls each band, the selected target's range and, if enabled, the static high shelf.
+ * Frequency strip (log scale, 1–20 kHz) showing the analysis bands, which target controls each
+ * band, the selected target's range, live band levels (auto level) and the static high shelf.
  */
 class BandView @JvmOverloads constructor(
     context: Context,
@@ -35,6 +35,13 @@ class BandView @JvmOverloads constructor(
         set(v) { field = v; invalidate() }
 
     var labels: Map<Focus, String> = emptyMap()
+        set(v) { field = v; invalidate() }
+
+    /**
+     * Live "above usual level" per MBC band in dB (NaN = no data), from auto level.
+     * Drawn as bars; a bar turns bright when it passes that band's threshold.
+     */
+    var live: FloatArray? = null
         set(v) { field = v; invalidate() }
 
     private val d = resources.displayMetrics.density
@@ -54,6 +61,8 @@ class BandView @JvmOverloads constructor(
         textSize = 11 * d; textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
     private val path = Path()
+    private val barPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val thrPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFECEFF4.toInt(); strokeWidth = 1.5f * d }
 
     private val fMin = 1_000f
     private val fMax = 20_000f
@@ -77,32 +86,46 @@ class BandView @JvmOverloads constructor(
             canvas.drawText(label, x(f).coerceIn(left + 8 * d, right - 10 * d), height - 4 * d, textPaint)
         }
 
+        val layout = DspMapping.layout(params)
         val settings = DspMapping.bandSettings(params)
-        val gap = 1.5f * d
-        for (i in 1..DspMapping.ANALYSIS_BANDS) {
-            val l = x(DspMapping.bandLow(i)) + gap / 2
-            val r = x(DspMapping.bandHigh(i)) - gap / 2
+        val liveValues = live?.takeIf { it.size == layout.mbcBands }
+        val gap = (if (layout.analysisBands > 12) 1f else 1.5f) * d
+        // Live bars: -12 dB (bottom) … +18 dB (top) relative to the band's usual level.
+        fun ly(db: Float) = bottom - ((db + 12f) / 30f).coerceIn(0f, 1f) * (bottom - top)
+        for (i in layout.analysisRange) {
+            val l = x(layout.bandLow(i)) + gap / 2
+            val r = x(layout.bandHigh(i)) - gap / 2
             val owner = settings[i].owner
             fillPaint.color = if (owner != null) FocusColors.of(owner) else 0xFF2E3440.toInt()
-            fillPaint.alpha = if (owner != null) 110 else 255
+            fillPaint.alpha = if (owner != null) (if (liveValues != null) 55 else 110) else 255
             canvas.drawRect(l, top, r, bottom, fillPaint)
+            val v = liveValues?.get(i)
+            if (v != null && !v.isNaN()) {
+                val margin = if (owner != null) DspMapping.marginDb(params.focus(owner).processing) else Float.NaN
+                val over = !margin.isNaN() && v >= margin
+                barPaint.color = if (over && owner != null) FocusColors.of(owner) else 0xFF8C96A6.toInt()
+                barPaint.alpha = if (over) 255 else 150
+                canvas.drawRect(l + gap, ly(v), r - gap, bottom, barPaint)
+                if (!margin.isNaN()) canvas.drawLine(l, ly(margin), r, ly(margin), thrPaint)
+            }
         }
 
         // Selected target: outline its bands and label it.
         val sel = params.selected
-        val covered = DspMapping.coveredBands(params.focus(sel))
+        val covered = DspMapping.coveredBands(params.focus(sel), layout)
         val selColor = FocusColors.of(sel)
-        val l = x(DspMapping.bandLow(covered.first()))
-        val r = x(DspMapping.bandHigh(covered.last()))
+        val l = x(layout.bandLow(covered.first()))
+        val r = x(layout.bandHigh(covered.last()))
         if (params.listen == ListenMode.FILTER) {
             canvas.drawRect(left, top, l, bottom, mutedPaint)
             canvas.drawRect(r, top, right, bottom, mutedPaint)
         }
+
         outlinePaint.color = selColor
         canvas.drawRect(l, top, r, bottom, outlinePaint)
         labelPaint.color = selColor
         val text = (labels[sel] ?: sel.name) + "  " +
-            fmtHz(DspMapping.bandLow(covered.first())) + "–" + fmtHz(DspMapping.bandHigh(covered.last()))
+            fmtHz(layout.bandLow(covered.first())) + "–" + fmtHz(layout.bandHigh(covered.last()))
         canvas.drawText(text, ((l + r) / 2f).coerceIn(left + 70 * d, right - 70 * d), top - 7 * d, labelPaint)
 
         if (params.shelfEnabled) {

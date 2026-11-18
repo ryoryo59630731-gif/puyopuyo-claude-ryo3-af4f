@@ -22,6 +22,8 @@ class Prefs(context: Context) {
             sharpness = sp.getFloat("sharpness", d.sharpness),
             mix = sp.getFloat("mix", d.mix),
             listen = enumOr(sp.getString("listen", null), d.listen),
+            resolution = enumOr(sp.getString("resolution", null), d.resolution),
+            autoLevel = sp.getBoolean("autoLevel", d.autoLevel),
             shelfEnabled = sp.getBoolean("shelfEnabled", d.shelfEnabled),
             shelfFreqHz = sp.getFloat("shelfFreqHz", d.shelfFreqHz),
             shelfGainDb = sp.getFloat("shelfGainDb", d.shelfGainDb),
@@ -39,6 +41,8 @@ class Prefs(context: Context) {
             .putFloat("sharpness", p.sharpness)
             .putFloat("mix", p.mix)
             .putString("listen", p.listen.name)
+            .putString("resolution", p.resolution.name)
+            .putBoolean("autoLevel", p.autoLevel)
             .putBoolean("shelfEnabled", p.shelfEnabled)
             .putFloat("shelfFreqHz", p.shelfFreqHz)
             .putFloat("shelfGainDb", p.shelfGainDb)

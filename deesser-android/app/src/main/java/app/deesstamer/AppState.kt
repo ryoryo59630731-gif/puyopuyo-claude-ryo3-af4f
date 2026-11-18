@@ -21,6 +21,35 @@ object AppState {
     var serviceRunning = false
         internal set
 
+    /** State of the auto-level measurement (only meaningful while the service runs). */
+    enum class AutoStatus { OFF, NO_PERMISSION, RUNNING, FAILED }
+
+    var autoStatus = AutoStatus.OFF
+        internal set
+    var autoError: String? = null
+        internal set
+
+    /** Latest per-band "above usual level" values (dB, NaN = no data) for the live display. */
+    var live: FloatArray? = null
+        private set
+
+    /** Seconds of music the auto level has learned from. */
+    var autoLearnedSeconds = 0f
+        internal set
+
+    private val liveListeners = LinkedHashSet<() -> Unit>()
+    fun addLiveListener(l: () -> Unit) { liveListeners += l }
+    fun removeLiveListener(l: () -> Unit) { liveListeners -= l }
+
+    fun onLive(values: FloatArray?) {
+        live = values
+        liveListeners.toList().forEach { it() }
+    }
+
+    fun onReferences(refs: FloatArray?) {
+        engine.setReferences(refs)
+    }
+
     private val listeners = LinkedHashSet<() -> Unit>()
     private val main = Handler(Looper.getMainLooper())
     private var saveScheduled = false

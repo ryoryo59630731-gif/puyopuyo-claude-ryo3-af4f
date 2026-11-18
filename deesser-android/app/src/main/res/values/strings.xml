@@ -26,13 +26,26 @@
     <string name="knob_high">HIGH</string>
     <string name="knob_processing">PROCESSING</string>
     <string name="knob_intensity">INTENSITY</string>
-    <string name="hint_focus">1.6〜16 kHz を 1/3 オクターブずつ 10 本の細い帯域に分け、それぞれが独立して「普段より大きくなった瞬間」だけ下がります。刺さっている帯域以外には触れません。\nLOW/HIGH＝対象の帯域　PROCESSING＝反応しやすさ（上げるほど小さな突出にも反応）　INTENSITY＝下げる強さ。\nターゲット同士の帯域が重なった部分は、反応しやすい方の設定が使われます。</string>
+    <string name="depth_format">約 −%1$.1f dB</string>
+    <string name="hint_focus">1.6〜16 kHz を細い帯域（標準は 1/3 オクターブ×10 本）に分け、それぞれが独立して「普段より大きくなった瞬間」だけ下がります。刺さっている帯域以外には触れません。\nLOW/HIGH＝対象の帯域　PROCESSING＝反応しやすさ（上げるほど小さな突出にも反応）　INTENSITY＝下げる強さ（数値は「しきい値を 12 dB 超えた音がおよそ何 dB 下がるか」の目安）。\nターゲット同士の帯域が重なった部分は、反応しやすい方の設定が使われます。</string>
 
     <string name="section_listen">モニター</string>
     <string name="listen_normal">Normal</string>
-    <string name="listen_filter">Filter（選択中のターゲットのみ）</string>
+    <string name="listen_filter">Filter（選択中のみ）</string>
     <string name="hint_listen">Filter にすると、選択中のターゲットの帯域だけが聞こえます。LOW/HIGH を動かして「一番刺さる音がよく聞こえる範囲」を探し、決まったら Normal に戻してください。</string>
 
+    <string name="section_detect">検出のしかた</string>
+    <string name="res_third">標準\n1/3オクターブ×10</string>
+    <string name="res_sixth">細かい\n1/6オクターブ×20</string>
+    <string name="auto_switch">オート（再生中の音に追従）</string>
+    <string name="auto_status_off">オート：オフ（固定の推定値を基準にしています）</string>
+    <string name="auto_status_stopped">オート：アプリが停止中です</string>
+    <string name="auto_status_no_permission">オート：権限がないため使えません</string>
+    <string name="auto_status_failed">オート：計測を開始できませんでした（%1$s）。固定の推定値を使います</string>
+    <string name="auto_status_learning">オート：学習中…（%1$.0f 秒）</string>
+    <string name="auto_status_running">オート：追従中（バーは各帯域の「普段比」、白線がしきい値）</string>
+    <string name="auto_permission_denied">許可されなかったため、オートは使えません</string>
+    <string name="hint_detect">細かい：帯域を半分の幅にし、周りの音に触れにくくします（端末の処理能力や Android 内部の周波数分解能によっては、標準と差が出ない可能性があります）。\nオート：再生中の音の大きさと周波数バランスを測り、各帯域の「普段のレベル」を曲と音量に合わせて自動で更新します（約10秒かけて追従）。Android の仕様で「録音」の権限が必要ですが、マイクは使わず、音を保存・送信することもありません。</string>
     <string name="section_common">共通</string>
     <string name="knob_sharpness">SHARPNESS</string>
     <string name="knob_mix">MIX</string>
@@ -69,7 +82,7 @@
     <string name="state_no_control">[他アプリが制御中]</string>
     <string name="state_failed">失敗 (%1$s)</string>
 
-    <string name="notes">メモ：このアプリは Android 標準の DynamicsProcessing（マルチバンド・コンプレッサー）で、細かく分けた帯域ごとに「突出した瞬間だけ」下げる処理をしています。基準となる「普段のレベル」は一般的な音楽の周波数バランスから決めた固定値なので、曲や端末の音量によって効き方が変わる場合があります。DynamicsProcessing にドライ／ウェットを混ぜる機能がないため、Mix はリダクション量を縮める近似です。同じ種類のエフェクトを使う他のイコライザーアプリ（例：Wavelet など）とは同時に使わないでください（設定を奪い合います）。メーカー独自の音響効果や再生経路によっては効かない場合があります。</string>
+    <string name="notes">メモ：このアプリは Android 標準の DynamicsProcessing（マルチバンド・コンプレッサー）で、細かく分けた帯域ごとに「突出した瞬間だけ」下げる処理をしています。基準となる「普段のレベル」は、オートがオフのときは一般的な音楽の周波数バランスから決めた固定値なので、曲や端末の音量によって効き方が変わる場合があります（オートをオンにすると再生中の音に追従します）。DynamicsProcessing にドライ／ウェットを混ぜる機能がないため、Mix はリダクション量を縮める近似です。同じ種類のエフェクトを使う他のイコライザーアプリ（例：Wavelet など）とは同時に使わないでください（設定を奪い合います）。メーカー独自の音響効果や再生経路によっては効かない場合があります。</string>
 
     <string name="notif_channel">エフェクト動作中</string>
     <string name="notif_title">DeEss Tamer 動作中</string>

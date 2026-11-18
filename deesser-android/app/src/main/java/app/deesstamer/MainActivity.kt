@@ -15,6 +15,7 @@ import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import app.deesstamer.ui.BandView
 import app.deesstamer.ui.CurveView
 import app.deesstamer.ui.FocusColors
@@ -38,6 +39,9 @@ class MainActivity : Activity() {
     private lateinit var intensity: KnobView
     private lateinit var focusHint: TextView
     private lateinit var listenGroup: RadioGroup
+    private lateinit var resolutionGroup: RadioGroup
+    private lateinit var autoSwitch: Switch
+    private lateinit var autoStatus: TextView
     private lateinit var sharpness: KnobView
     private lateinit var mix: KnobView
     private lateinit var outputGain: KnobView
@@ -51,6 +55,10 @@ class MainActivity : Activity() {
     /** Guards against feedback loops while the UI is being filled from state. */
     private var rendering = false
     private val stateListener: () -> Unit = { render() }
+    private val liveListener: () -> Unit = {
+        band.live = AppState.live
+        renderAutoStatus()
+    }
 
     private val supported by lazy { EffectEngine.isSupported() }
 
@@ -94,6 +102,9 @@ class MainActivity : Activity() {
         intensity = findViewById(R.id.intensity)
         focusHint = findViewById(R.id.focusHint)
         listenGroup = findViewById(R.id.listenGroup)
+        resolutionGroup = findViewById(R.id.resolutionGroup)
+        autoSwitch = findViewById(R.id.autoSwitch)
+        autoStatus = findViewById(R.id.autoStatus)
         sharpness = findViewById(R.id.sharpness)
         mix = findViewById(R.id.mix)
         outputGain = findViewById(R.id.outputGain)
@@ -120,6 +131,10 @@ class MainActivity : Activity() {
         percentKnob(intensity, R.string.knob_intensity, 50f) { p, v ->
             p.updateFocus(p.selected) { it.copy(intensity = v) }
         }
+        // Shown as approximate depth, like the Range / Depth controls of Pro-DS and soothe2.
+        intensity.formatter = { v ->
+            getString(R.string.depth_format, DspMapping.estimatedDepthDb(v, AppState.params.mix))
+        }
 
         val d = DeEsserParams()
         percentKnob(sharpness, R.string.knob_sharpness, d.sharpness) { p, v -> p.copy(sharpness = v) }
@@ -139,6 +154,20 @@ class MainActivity : Activity() {
         listenGroup.setOnCheckedChangeListener { _, id ->
             if (rendering) return@setOnCheckedChangeListener
             AppState.update { it.copy(listen = if (id == R.id.listenFilter) ListenMode.FILTER else ListenMode.NORMAL) }
+        }
+        resolutionGroup.setOnCheckedChangeListener { _, id ->
+            if (rendering) return@setOnCheckedChangeListener
+            AppState.update { it.copy(resolution = if (id == R.id.resSixth) Resolution.SIXTH else Resolution.THIRD) }
+        }
+        autoSwitch.setOnCheckedChangeListener { _, on ->
+            if (rendering) return@setOnCheckedChangeListener
+            if (!on) {
+                AppState.update { it.copy(autoLevel = false) }
+            } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                enableAutoLevel()
+            } else {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQ_AUDIO)
+            }
         }
         shelfSwitch.setOnCheckedChangeListener { _, on ->
             if (!rendering) AppState.update { it.copy(shelfEnabled = on) }
@@ -170,6 +199,7 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         AppState.addListener(stateListener)
+        AppState.addLiveListener(liveListener)
         // Resume the effect if it was on but the process was killed.
         if (AppState.prefs.powerOn && !AppState.serviceRunning && supported) {
             runCatching { DeEsserService.start(this) }
@@ -179,7 +209,28 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         AppState.removeListener(stateListener)
+        AppState.removeLiveListener(liveListener)
         super.onStop()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQ_AUDIO) return
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+            enableAutoLevel()
+        } else {
+            Toast.makeText(this, R.string.auto_permission_denied, Toast.LENGTH_LONG).show()
+            render()
+        }
+    }
+
+    private fun enableAutoLevel() {
+        AppState.update { it.copy(autoLevel = true) }
+        // Let the running service re-declare its foreground type while we are visible.
+        if (AppState.serviceRunning) {
+            DeEsserService.start(this) { action = DeEsserService.ACTION_REFRESH }
+        }
+        render()
     }
 
     /**
@@ -267,6 +318,10 @@ class MainActivity : Activity() {
             intensity.value = fp.intensity
 
             listenGroup.check(if (p.listen == ListenMode.FILTER) R.id.listenFilter else R.id.listenNormal)
+            resolutionGroup.check(if (p.resolution == Resolution.SIXTH) R.id.resSixth else R.id.resThird)
+            autoSwitch.isChecked = p.autoLevel
+            band.live = AppState.live
+            renderAutoStatus()
 
             sharpness.value = p.sharpness
             mix.value = p.mix
@@ -283,6 +338,25 @@ class MainActivity : Activity() {
             renderStatus(p)
         } finally {
             rendering = false
+        }
+    }
+
+    private fun renderAutoStatus() {
+        val p = AppState.params
+        autoStatus.text = when {
+            !p.autoLevel -> getString(R.string.auto_status_off)
+            !AppState.serviceRunning -> getString(R.string.auto_status_stopped)
+            else -> when (AppState.autoStatus) {
+                AppState.AutoStatus.NO_PERMISSION -> getString(R.string.auto_status_no_permission)
+                AppState.AutoStatus.FAILED -> getString(R.string.auto_status_failed, AppState.autoError ?: "?")
+                AppState.AutoStatus.RUNNING ->
+                    if (AppState.autoLearnedSeconds < LevelAnalyzer.LONG_TAU_SEC) {
+                        getString(R.string.auto_status_learning, AppState.autoLearnedSeconds)
+                    } else {
+                        getString(R.string.auto_status_running)
+                    }
+                AppState.AutoStatus.OFF -> getString(R.string.auto_status_stopped)
+            }
         }
     }
 
@@ -392,5 +466,6 @@ class MainActivity : Activity() {
 
     companion object {
         private const val REQ_NOTIF = 10
+        private const val REQ_AUDIO = 11
     }
 }

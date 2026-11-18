@@ -1,5 +1,6 @@
 package app.deesstamer
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -9,6 +10,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.audiofx.AudioEffect
 import android.os.Build
@@ -35,7 +37,12 @@ class DeEsserService : Service() {
         }
     }
 
-    private val stateListener: () -> Unit = { updateNotification() }
+    private var tracker: LevelTracker? = null
+
+    private val stateListener: () -> Unit = {
+        syncTracker()
+        updateNotification()
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -43,12 +50,7 @@ class DeEsserService : Service() {
         super.onCreate()
         AppState.init(this)
         createChannel()
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForegroundWithTypes()
 
         val filter = IntentFilter().apply {
             addAction(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION)
@@ -62,8 +64,87 @@ class DeEsserService : Service() {
 
         AppState.serviceRunning = true
         AppState.syncTargets()
+        syncTracker()
         AppState.addListener(stateListener)
         AppState.notifyListeners()
+    }
+
+    private fun hasRecordPermission() =
+        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+    private var micForeground = false
+
+    /**
+     * Declares the "microphone" foreground type when auto level is on. The Visualizer never
+     * opens the microphone, but it is gated by the same RECORD_AUDIO permission, which Android
+     * only honours for background services of that type. Android 14+ refuses the type unless
+     * the app is in the foreground at that moment (e.g. after a reboot), so fall back to the
+     * plain type; auto level then starts the next time the app is opened.
+     */
+    private fun startForegroundWithTypes() {
+        val notification = buildNotification()
+        if (Build.VERSION.SDK_INT < 29) {
+            startForeground(NOTIFICATION_ID, notification)
+            return
+        }
+        val base = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE else 0
+        val wantMic = Build.VERSION.SDK_INT >= 30 && AppState.params.autoLevel && hasRecordPermission()
+        micForeground = false
+        if (wantMic) {
+            try {
+                startForeground(NOTIFICATION_ID, notification, base or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                micForeground = true
+                return
+            } catch (t: Throwable) {
+                // Not allowed right now (started from the background); continue without it.
+            }
+        }
+        startForeground(NOTIFICATION_ID, notification, base)
+    }
+
+    /** Start or stop the auto-level measurement to match the settings. */
+    private fun syncTracker() {
+        val p = AppState.params
+        val want = AppState.serviceRunning && p.autoLevel
+        if (!want) {
+            if (tracker != null) {
+                tracker?.stop()
+                tracker = null
+                AppState.onReferences(null)
+                AppState.onLive(null)
+            }
+            AppState.autoStatus = AppState.AutoStatus.OFF
+            return
+        }
+        if (!hasRecordPermission()) {
+            AppState.autoStatus = AppState.AutoStatus.NO_PERMISSION
+            return
+        }
+        val layout = DspMapping.layout(p)
+        tracker?.let { t ->
+            if (t.analyzer.layout.resolution != layout.resolution) {
+                t.analyzer.layout = layout
+                AppState.onReferences(null)
+            }
+            return
+        }
+        val t = LevelTracker(
+            layout,
+            onLive = { values ->
+                AppState.autoLearnedSeconds = tracker?.analyzer?.learnedSeconds ?: 0f
+                AppState.onLive(values)
+            },
+            onReferences = { refs -> AppState.onReferences(refs) },
+        )
+        val err = t.start()
+        if (err == null) {
+            tracker = t
+            AppState.autoStatus = AppState.AutoStatus.RUNNING
+            AppState.autoError = null
+        } else {
+            AppState.autoStatus = AppState.AutoStatus.FAILED
+            AppState.autoError = err
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -72,6 +153,14 @@ class DeEsserService : Service() {
                 AppState.prefs.powerOn = false
                 stopSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_REFRESH -> {
+                // Sent by the activity (in the foreground) after auto level was switched on.
+                if (AppState.params.autoLevel && !micForeground) startForegroundWithTypes()
+                tracker?.stop()
+                tracker = null
+                syncTracker()
+                AppState.notifyListeners()
             }
             ACTION_ATTACH_SESSION -> {
                 val session = intent.getIntExtra(AudioEffect.EXTRA_AUDIO_SESSION, AudioEffect.ERROR)
@@ -86,6 +175,11 @@ class DeEsserService : Service() {
     override fun onDestroy() {
         runCatching { unregisterReceiver(sessionReceiver) }
         AppState.removeListener(stateListener)
+        tracker?.stop()
+        tracker = null
+        AppState.onReferences(null)
+        AppState.onLive(null)
+        AppState.autoStatus = AppState.AutoStatus.OFF
         AppState.serviceRunning = false
         AppState.engine.detachAll()
         AppState.notifyListeners()
@@ -137,6 +231,7 @@ class DeEsserService : Service() {
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "app.deesstamer.STOP"
         const val ACTION_ATTACH_SESSION = "app.deesstamer.ATTACH_SESSION"
+        const val ACTION_REFRESH = "app.deesstamer.REFRESH"
 
         fun start(context: Context, extra: Intent.() -> Unit = {}) {
             val intent = Intent(context, DeEsserService::class.java).apply(extra)

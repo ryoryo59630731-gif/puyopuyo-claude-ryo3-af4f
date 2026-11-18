@@ -3,6 +3,7 @@ package app.deesstamer
 import android.media.audiofx.AudioEffect
 import android.media.audiofx.DynamicsProcessing
 import android.util.Log
+import kotlin.math.abs
 
 /**
  * Owns one DynamicsProcessing effect per audio session.
@@ -13,7 +14,7 @@ import android.util.Log
  * sessions with ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION.
  *
  * Signal chain inside each effect:
- *   pre-EQ (static high shelf) -> 12-band MBC (per-target harshness control)
+ *   pre-EQ (static high shelf) -> MBC (per-band harshness control, 12 or 22 bands)
  *   -> post-EQ (listen solo + output gain)
  */
 class EffectEngine {
@@ -28,6 +29,8 @@ class EffectEngine {
         val effect: DynamicsProcessing,
         val packageName: String?,
         var hasControl: Boolean,
+        /** Band count is fixed when the effect is created; a different layout needs a new effect. */
+        val mbcBands: Int,
     )
 
     private val slots = LinkedHashMap<Int, Slot>()
@@ -37,13 +40,22 @@ class EffectEngine {
 
     var onChanged: (() -> Unit)? = null
 
+    /** Parameters most recently pushed, re-applied when we regain control of an effect. */
+    private var lastParams: DeEsserParams? = null
+
+    /** Measured usual band levels (auto level), or null for the fixed estimate. */
+    private var references: FloatArray? = null
+
+    /** Thresholds last written per session, to send only bands that moved. */
+    private val sentThresholds = HashMap<Int, FloatArray>()
+
     fun has(sessionId: Int) = slots.containsKey(sessionId)
 
     fun sessions(): List<SessionInfo> =
         slots.map { (id, s) -> SessionInfo(id, s.packageName, s.hasControl) }
 
-    /** Parameters most recently pushed, re-applied when we regain control of an effect. */
-    private var lastParams: DeEsserParams? = null
+    private fun refsFor(p: DeEsserParams): FloatArray? =
+        references?.takeIf { it.size == DspMapping.layout(p).mbcBands }
 
     fun attach(sessionId: Int, packageName: String?, params: DeEsserParams): Boolean {
         lastParams = params
@@ -52,8 +64,9 @@ class EffectEngine {
             return true
         }
         return try {
-            val effect = DynamicsProcessing(PRIORITY, sessionId, buildConfig(params))
-            val slot = Slot(effect, packageName, effect.hasControl())
+            val settings = DspMapping.bandSettings(params, refsFor(params))
+            val effect = DynamicsProcessing(PRIORITY, sessionId, buildConfig(params, settings))
+            val slot = Slot(effect, packageName, effect.hasControl(), settings.size)
             effect.setControlStatusListener { _, granted ->
                 slot.hasControl = granted
                 if (granted) lastParams?.let { applyTo(sessionId, it) }
@@ -61,6 +74,7 @@ class EffectEngine {
             }
             effect.setEnabled(true)
             slots[sessionId] = slot
+            sentThresholds[sessionId] = FloatArray(settings.size) { settings[it].thresholdDb }
             errors.remove(sessionId)
             onChanged?.invoke()
             true
@@ -77,6 +91,7 @@ class EffectEngine {
             runCatching { slot.effect.setEnabled(false) }
             runCatching { slot.effect.release() }
         }
+        sentThresholds.remove(sessionId)
         onChanged?.invoke()
     }
 
@@ -90,22 +105,60 @@ class EffectEngine {
         for (id in slots.keys.toList()) applyTo(id, params)
     }
 
+    /**
+     * New measured reference levels (or null to go back to the fixed estimate). Only the MBC
+     * bands whose threshold moved by more than [MIN_THRESHOLD_STEP_DB] are rewritten, to keep
+     * parameter traffic to the audio server low.
+     */
+    fun setReferences(refs: FloatArray?) {
+        references = refs
+        val p = lastParams ?: return
+        val settings = DspMapping.bandSettings(p, refsFor(p))
+        for ((id, slot) in slots.toList()) {
+            if (!slot.hasControl || slot.mbcBands != settings.size) continue
+            val sent = sentThresholds.getOrPut(id) { FloatArray(settings.size) }
+            try {
+                for (i in settings.indices) {
+                    if (abs(settings[i].thresholdDb - sent[i]) >= MIN_THRESHOLD_STEP_DB) {
+                        slot.effect.setMbcBandAllChannelsTo(i, mbcBand(settings[i]))
+                        sent[i] = settings[i].thresholdDb
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "setReferences($id) failed", t)
+                applyTo(id, p)
+            }
+        }
+    }
+
     private fun applyTo(sessionId: Int, params: DeEsserParams) {
         val slot = slots[sessionId] ?: return
         // Another app with higher priority owns this effect engine; writes would be rejected.
         if (!slot.hasControl) return
+        val settings = DspMapping.bandSettings(params, refsFor(params))
+        if (slot.mbcBands != settings.size) {
+            recreate(sessionId, slot, params)
+            return
+        }
         try {
             slot.effect.setPreEqAllChannelsTo(buildPreEq(params))
-            slot.effect.setMbcAllChannelsTo(buildMbc(params))
+            slot.effect.setMbcAllChannelsTo(buildMbc(settings))
             slot.effect.setPostEqAllChannelsTo(buildPostEq(params))
+            sentThresholds[sessionId] = FloatArray(settings.size) { settings[it].thresholdDb }
             if (!slot.effect.enabled) slot.effect.setEnabled(true)
         } catch (t: Throwable) {
             // Typically the audio server restarted and the handle is dead: rebuild it.
             Log.w(TAG, "apply($sessionId) failed, recreating", t)
-            slots.remove(sessionId)
-            runCatching { slot.effect.release() }
-            attach(sessionId, slot.packageName, params)
+            recreate(sessionId, slot, params)
         }
+    }
+
+    private fun recreate(sessionId: Int, slot: Slot, params: DeEsserParams) {
+        slots.remove(sessionId)
+        sentThresholds.remove(sessionId)
+        runCatching { slot.effect.setEnabled(false) }
+        runCatching { slot.effect.release() }
+        attach(sessionId, slot.packageName, params)
     }
 
     companion object {
@@ -116,25 +169,24 @@ class EffectEngine {
 
         private const val CHANNELS = 2
         private const val PRE_EQ_BANDS = 2
-        private const val MBC_BANDS = DspMapping.MBC_BANDS
-        private const val POST_EQ_BANDS = DspMapping.MBC_BANDS
+        private const val MIN_THRESHOLD_STEP_DB = 0.5f
 
         fun isSupported(): Boolean = runCatching {
             AudioEffect.queryEffects()?.any { it.type == AudioEffect.EFFECT_TYPE_DYNAMICS_PROCESSING } == true
         }.getOrDefault(false)
 
-        fun buildConfig(p: DeEsserParams): DynamicsProcessing.Config =
+        fun buildConfig(p: DeEsserParams, settings: List<DspMapping.BandSetting>): DynamicsProcessing.Config =
             DynamicsProcessing.Config.Builder(
                 DynamicsProcessing.VARIANT_FAVOR_TIME_RESOLUTION,
                 CHANNELS,
                 true, PRE_EQ_BANDS,
-                true, MBC_BANDS,
-                true, POST_EQ_BANDS,
+                true, settings.size,
+                true, settings.size,
                 false,
             )
                 .setPreferredFrameDuration(10f)
                 .setPreEqAllChannelsTo(buildPreEq(p))
-                .setMbcAllChannelsTo(buildMbc(p))
+                .setMbcAllChannelsTo(buildMbc(settings))
                 .setPostEqAllChannelsTo(buildPostEq(p))
                 .build()
 
@@ -148,26 +200,24 @@ class EffectEngine {
             return eq
         }
 
-        fun buildMbc(p: DeEsserParams): DynamicsProcessing.Mbc {
-            val mbc = DynamicsProcessing.Mbc(true, true, MBC_BANDS)
-            DspMapping.bandSettings(p).forEachIndexed { i, b ->
-                // Pass-through bands have ratio 1 and a 0 dBFS threshold.
-                mbc.setBand(
-                    i,
-                    DynamicsProcessing.MbcBand(
-                        true, b.cutoffHz, b.attackMs, b.releaseMs, b.ratio, b.thresholdDb, b.kneeDb,
-                        -90f, 1f, 0f, 0f,
-                    ),
-                )
-            }
+        /** Pass-through bands have ratio 1 and a 0 dBFS threshold. */
+        private fun mbcBand(b: DspMapping.BandSetting) = DynamicsProcessing.MbcBand(
+            true, b.cutoffHz, b.attackMs, b.releaseMs, b.ratio, b.thresholdDb, b.kneeDb,
+            -90f, 1f, 0f, 0f,
+        )
+
+        fun buildMbc(settings: List<DspMapping.BandSetting>): DynamicsProcessing.Mbc {
+            val mbc = DynamicsProcessing.Mbc(true, true, settings.size)
+            settings.forEachIndexed { i, b -> mbc.setBand(i, mbcBand(b)) }
             return mbc
         }
 
         fun buildPostEq(p: DeEsserParams): DynamicsProcessing.Eq {
+            val layout = DspMapping.layout(p)
             val gains = DspMapping.postEqGains(p)
-            val eq = DynamicsProcessing.Eq(true, true, POST_EQ_BANDS)
-            for (i in 0 until POST_EQ_BANDS) {
-                eq.setBand(i, DynamicsProcessing.EqBand(true, DspMapping.MBC_CUTOFFS[i], gains[i]))
+            val eq = DynamicsProcessing.Eq(true, true, layout.mbcBands)
+            for (i in 0 until layout.mbcBands) {
+                eq.setBand(i, DynamicsProcessing.EqBand(true, layout.cutoffs[i], gains[i]))
             }
             return eq
         }

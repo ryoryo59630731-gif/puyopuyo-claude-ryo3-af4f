@@ -173,6 +173,49 @@
             style="@style/Hint"
             android:text="@string/hint_listen" />
 
+        <!-- Detection -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_detect" />
+
+        <LinearLayout
+            style="@style/Panel"
+            android:orientation="vertical">
+
+            <RadioGroup
+                android:id="@+id/resolutionGroup"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <RadioButton
+                    android:id="@+id/resThird"
+                    style="@style/Segment"
+                    android:text="@string/res_third" />
+
+                <RadioButton
+                    android:id="@+id/resSixth"
+                    style="@style/Segment"
+                    android:text="@string/res_sixth" />
+            </RadioGroup>
+
+            <Switch
+                android:id="@+id/autoSwitch"
+                style="@style/SettingSwitch"
+                android:layout_marginTop="8dp"
+                android:text="@string/auto_switch" />
+
+            <TextView
+                android:id="@+id/autoStatus"
+                style="@style/Hint"
+                android:layout_marginTop="0dp"
+                android:textColor="@color/text" />
+
+            <TextView
+                style="@style/Hint"
+                android:text="@string/hint_detect" />
+        </LinearLayout>
+
         <!-- Shared controls -->
         <TextView
             style="@style/SectionTitle"

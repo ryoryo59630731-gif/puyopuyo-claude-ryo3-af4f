@@ -35,6 +35,15 @@ data class FocusParams(
     }
 }
 
+/**
+ * Width of the analysis bands. Narrower bands touch less of the surrounding sound
+ * (the idea behind soothe2's "sharpness" and RX's many-band spectral de-esser).
+ */
+enum class Resolution(val bandsPerOctave: Int) {
+    THIRD(3),
+    SIXTH(6),
+}
+
 /** What the user hears. FILTER solos the selected target's bands to help find the harsh range. */
 enum class ListenMode { NORMAL, FILTER }
 
@@ -60,6 +69,13 @@ data class DeEsserParams(
     /** 0..100: overall amount (approximation, see [DspMapping.ratio]). */
     val mix: Float = 100f,
     val listen: ListenMode = ListenMode.NORMAL,
+    val resolution: Resolution = Resolution.THIRD,
+    /**
+     * Follow the music's actual level and per-band balance instead of a fixed estimate
+     * (like Sonnox SuprEsser's auto level tracking). Needs the RECORD_AUDIO permission
+     * because Android's Visualizer, which measures the playback, requires it.
+     */
+    val autoLevel: Boolean = false,
     val shelfEnabled: Boolean = false,
     val shelfFreqHz: Float = 8_000f,
     val shelfGainDb: Float = -4f,
@@ -86,7 +102,9 @@ data class Preset(val nameRes: Int, val apply: (DeEsserParams) -> DeEsserParams)
 
 object Presets {
     /** Keeps device-level choices (apply mode, boot) and resets the sound. */
-    private fun base(p: DeEsserParams) = DeEsserParams(applyMode = p.applyMode, startOnBoot = p.startOnBoot)
+    private fun base(p: DeEsserParams) = DeEsserParams(
+        applyMode = p.applyMode, startOnBoot = p.startOnBoot, autoLevel = p.autoLevel, resolution = p.resolution,
+    )
 
     private fun fp(f: Focus, on: Boolean, proc: Float, inten: Float, lo: Float = f.defaultLowHz, hi: Float = f.defaultHighHz) =
         FocusParams(on, lo, hi, proc, inten)

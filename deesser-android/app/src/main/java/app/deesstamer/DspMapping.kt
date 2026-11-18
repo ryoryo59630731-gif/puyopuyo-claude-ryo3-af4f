@@ -1,6 +1,7 @@
 package app.deesstamer
 
 import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.log2
 import kotlin.math.max
 import kotlin.math.pow
@@ -10,10 +11,10 @@ import kotlin.math.sqrt
  * Pure math that turns the user's settings into the per-band numbers of Android's
  * DynamicsProcessing multi-band compressor. No Android classes here so it can be unit tested.
  *
- * Band layout (12 MBC bands, upper edges in [MBC_CUTOFFS]):
+ * Band layout (see [Layout]):
  *   band 0            : below 1.6 kHz, never touched
- *   bands 1..10       : 1/3-octave analysis bands from 1.6 kHz to 16 kHz
- *   band 11           : 16–20 kHz, never touched
+ *   bands 1..N        : 1/3- or 1/6-octave analysis bands from 1.6 kHz to 16 kHz
+ *   band N+1          : 16–20 kHz, never touched
  * Each analysis band has its own detector, so only the narrow band that actually spikes is
  * turned down. A band belongs to every enabled target whose range contains the band's centre;
  * if several targets claim it, the most sensitive one wins.
@@ -26,33 +27,55 @@ object DspMapping {
     /** Gain used to mute bands outside the soloed target in FILTER listen mode. */
     const val SOLO_MUTE_DB = -60f
 
-    /** 1/3-octave edges around 2 kHz: 1587, 2000, 2520, … 12699, 16000 Hz. */
-    val ANALYSIS_EDGES: FloatArray = FloatArray(11) { k -> (2_000.0 * 2.0.pow((k - 1) / 3.0)).toFloat() }
+    /** Broadband level assumed when the level is not measured (auto level off). */
+    const val ASSUMED_RMS_DB = -20f
 
-    const val ANALYSIS_BANDS = 10
-    const val MBC_BANDS = ANALYSIS_BANDS + 2
+    /** Spike size used to express INTENSITY as "about how many dB a spike is pulled down". */
+    const val DEPTH_REFERENCE_OVERSHOOT_DB = 12f
 
-    /** Upper cutoff of each MBC band. */
-    val MBC_CUTOFFS: FloatArray = FloatArray(MBC_BANDS) { i ->
-        if (i < ANALYSIS_EDGES.size) ANALYSIS_EDGES[i] else TOP_CUTOFF_HZ
+    /** Lowest analysis edge: one third of an octave below 2 kHz. */
+    private val LOW_EDGE_OCT = -1.0 / 3.0
+
+    /** Analysis region spans 2 kHz·2^(-1/3) … 2 kHz·2^3 = 1587 Hz … 16 kHz (10/3 octaves). */
+    class Layout(val resolution: Resolution) {
+        val bandsPerOctave = resolution.bandsPerOctave
+        val analysisBands = 10 * bandsPerOctave / 3
+        val mbcBands = analysisBands + 2
+
+        /** analysisBands + 1 edges. */
+        val edges: FloatArray = FloatArray(analysisBands + 1) { k ->
+            (2_000.0 * 2.0.pow(LOW_EDGE_OCT + k.toDouble() / bandsPerOctave)).toFloat()
+        }
+
+        /** Upper cutoff of each MBC band. */
+        val cutoffs: FloatArray = FloatArray(mbcBands) { i -> if (i < edges.size) edges[i] else TOP_CUTOFF_HZ }
+
+        fun bandLow(i: Int) = edges[i - 1]
+        fun bandHigh(i: Int) = edges[i]
+        fun bandCenter(i: Int) = sqrt(bandLow(i) * bandHigh(i))
+        val analysisRange: IntRange get() = 1..analysisBands
     }
 
-    /** Lower / upper edge and geometric centre of analysis band 1..10. */
-    fun bandLow(i: Int) = ANALYSIS_EDGES[i - 1]
-    fun bandHigh(i: Int) = ANALYSIS_EDGES[i]
-    fun bandCenter(i: Int) = sqrt(bandLow(i) * bandHigh(i))
+    private val layouts = Resolution.entries.associateWith { Layout(it) }
+    fun layout(r: Resolution): Layout = layouts.getValue(r)
+    fun layout(p: DeEsserParams): Layout = layout(p.resolution)
 
     private fun pct(v: Float) = (v / 100f).coerceIn(0f, 1f)
     private fun lerp(a: Float, b: Float, t: Float) = a + (b - a) * t
 
     /**
-     * Typical level (dBFS, as seen by a band detector) of a 1/3-octave band in finished music:
-     * roughly pink with an extra ~3 dB/oct roll-off in the treble. Thresholds are set relative
-     * to this, so "Processing" means "how far above the usual level before reducing".
+     * Typical level of an analysis band relative to the broadband level, for finished music:
+     * roughly pink (a 1/3-octave band ≈ -15 dB) with an extra ~3 dB/oct roll-off in the treble.
+     * Narrower bands hold proportionally less energy.
      */
-    fun referenceDb(centerHz: Float): Float = -35f - 3f * log2(centerHz / 2_000f)
+    fun modelRelativeDb(centerHz: Float, bandsPerOctave: Int = 3): Float =
+        -15f - 3f * log2(centerHz / 2_000f) - 10f * log10(bandsPerOctave / 3f)
 
-    /** Processing 0% = +30 dB over typical (almost never), 50% = +10 dB, 100% = -10 dB. */
+    /** Usual level (dBFS) of a band when the broadband level is [rmsDb]. */
+    fun referenceDb(centerHz: Float, bandsPerOctave: Int = 3, rmsDb: Float = ASSUMED_RMS_DB): Float =
+        rmsDb + modelRelativeDb(centerHz, bandsPerOctave)
+
+    /** Processing 0% = +30 dB over the usual level (almost never), 50% = +10 dB, 100% = -10 dB. */
     fun marginDb(processing: Float): Float = 30f - 40f * pct(processing)
 
     /** Intensity sets the ratio on an exponential scale: 0% = 1:1, 50% ≈ 4.5:1, 100% = 20:1. */
@@ -69,11 +92,21 @@ object DspMapping {
         return 1f / max(1f - slopeReduction, 0.05f)
     }
 
+    /**
+     * Reduction for a spike [DEPTH_REFERENCE_OVERSHOOT_DB] above the threshold. Shown next to
+     * INTENSITY as an approximate "range"/"depth" (DynamicsProcessing cannot cap reduction).
+     */
+    fun estimatedDepthDb(intensity: Float, mix: Float): Float =
+        DEPTH_REFERENCE_OVERSHOOT_DB * (1f - 1f / ratio(intensity, mix))
+
     /** Sharp = hard knee, soft = 12 dB knee. */
     fun kneeDb(sharpness: Float): Float = lerp(12f, 0f, pct(sharpness))
 
     /** Sharpness scales each target's base attack/release: soft ×2, sharp ×0.5. */
     fun timeFactor(sharpness: Float): Float = lerp(2f, 0.5f, pct(sharpness))
+
+    /** Higher bands react faster (as soothe2 does): ×1.4 at 2 kHz, ×1 at 4 kHz, ×0.5 at 16 kHz. */
+    fun frequencyTimeFactor(centerHz: Float): Float = sqrt(4_000f / centerHz).coerceIn(0.5f, 1.5f)
 
     /** Range of a target, ordered and clamped to the analysed region. */
     fun focusRange(fp: FocusParams): Pair<Float, Float> {
@@ -83,15 +116,15 @@ object DspMapping {
     }
 
     /**
-     * Analysis bands (1..10) covered by a target, enabled or not: those whose centre lies in
-     * its range, or the single band nearest to the range if it is narrower than a band.
+     * Analysis bands covered by a target, enabled or not: those whose centre lies in its
+     * range, or the single band nearest to the range if it is narrower than a band.
      */
-    fun coveredBands(fp: FocusParams): List<Int> {
+    fun coveredBands(fp: FocusParams, layout: Layout = layout(Resolution.THIRD)): List<Int> {
         val (lo, hi) = focusRange(fp)
-        val inside = (1..ANALYSIS_BANDS).filter { bandCenter(it) in lo..hi }
+        val inside = layout.analysisRange.filter { layout.bandCenter(it) in lo..hi }
         if (inside.isNotEmpty()) return inside
         val mid = sqrt(lo * hi)
-        return listOf((1..ANALYSIS_BANDS).minBy { abs(log2(bandCenter(it) / mid)) })
+        return listOf(layout.analysisRange.minBy { abs(log2(layout.bandCenter(it) / mid)) })
     }
 
     data class BandSetting(
@@ -105,35 +138,42 @@ object DspMapping {
         val releaseMs: Float,
     )
 
-    fun bandSettings(p: DeEsserParams): List<BandSetting> {
+    /**
+     * Per-MBC-band settings. [references] (dBFS per MBC band) are the measured usual levels
+     * when auto level is on; null uses the fixed estimate.
+     */
+    fun bandSettings(p: DeEsserParams, references: FloatArray? = null): List<BandSetting> {
+        val layout = layout(p)
         val claims = HashMap<Int, MutableList<Focus>>()
         for (f in Focus.entries) {
             val fp = p.focus(f)
             if (!fp.enabled) continue
-            for (b in coveredBands(fp)) claims.getOrPut(b) { mutableListOf() } += f
+            for (b in coveredBands(fp, layout)) claims.getOrPut(b) { mutableListOf() } += f
         }
         val knee = kneeDb(p.sharpness)
         val tf = timeFactor(p.sharpness)
-        return List(MBC_BANDS) { i ->
+        return List(layout.mbcBands) { i ->
             val owners = claims[i]
             if (owners.isNullOrEmpty()) {
-                BandSetting(MBC_CUTOFFS[i], null, 0f, 1f, 0f, 1f, 50f)
+                BandSetting(layout.cutoffs[i], null, 0f, 1f, 0f, 1f, 50f)
             } else {
-                val ref = referenceDb(bandCenter(i))
+                val center = layout.bandCenter(i)
+                val ref = references?.getOrNull(i) ?: referenceDb(center, layout.bandsPerOctave)
                 // Most sensitive target wins; ties go to the stronger one.
                 val owner = owners.minWith(
                     compareBy<Focus> { marginDb(p.focus(it).processing) }
                         .thenByDescending { p.focus(it).intensity },
                 )
                 val fp = p.focus(owner)
+                val ftf = frequencyTimeFactor(center)
                 BandSetting(
-                    cutoffHz = MBC_CUTOFFS[i],
+                    cutoffHz = layout.cutoffs[i],
                     owner = owner,
                     thresholdDb = (ref + marginDb(fp.processing)).coerceIn(-90f, 0f),
                     ratio = ratio(fp.intensity, p.mix),
                     kneeDb = knee,
-                    attackMs = owner.baseAttackMs * tf,
-                    releaseMs = owner.baseReleaseMs * tf,
+                    attackMs = owner.baseAttackMs * tf * ftf,
+                    releaseMs = owner.baseReleaseMs * tf * ftf,
                 )
             }
         }
@@ -141,8 +181,9 @@ object DspMapping {
 
     /** Post-EQ gains (dB) per MBC band: solo for FILTER listen, plus output gain. */
     fun postEqGains(p: DeEsserParams): FloatArray {
-        val solo = if (p.listen == ListenMode.FILTER) coveredBands(p.focus(p.selected)).toSet() else null
-        return FloatArray(MBC_BANDS) { i ->
+        val layout = layout(p)
+        val solo = if (p.listen == ListenMode.FILTER) coveredBands(p.focus(p.selected), layout).toSet() else null
+        return FloatArray(layout.mbcBands) { i ->
             val muted = solo != null && i !in solo
             (if (muted) SOLO_MUTE_DB else 0f) + p.outputGainDb
         }
