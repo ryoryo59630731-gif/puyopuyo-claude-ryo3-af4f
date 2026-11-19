@@ -82,6 +82,18 @@ data class DeEsserParams(
     val outputGainDb: Float = 0f,
     val applyMode: ApplyMode = ApplyMode.GLOBAL,
     val startOnBoot: Boolean = false,
+    /**
+     * dB added to every band's threshold (±12). Negative = reacts to smaller spikes and pulls
+     * the same spike down further (a spike 12 dB over the normal threshold loses ~17 dB at -6).
+     */
+    val thresholdOffsetDb: Float = 0f,
+    /** Whether [bandOffsetsDb] is added on top of [thresholdOffsetDb]. Values are kept when off. */
+    val bandOffsetsEnabled: Boolean = false,
+    /**
+     * dB added to the threshold of each 1/6-octave analysis band, 1.6–16 kHz (see
+     * [DspMapping.FINE_BAND_COUNT]). The 1/3-octave layout uses the mean of its two halves.
+     */
+    val bandOffsetsDb: List<Float> = DspMapping.ZERO_BAND_OFFSETS,
 ) {
     fun focus(f: Focus): FocusParams = when (f) {
         Focus.GUITAR -> guitar

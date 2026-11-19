@@ -20,6 +20,7 @@ import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import app.deesstamer.ui.BandOffsetView
 import app.deesstamer.ui.BandView
 import app.deesstamer.ui.CurveView
 import app.deesstamer.ui.FocusColors
@@ -57,6 +58,13 @@ class MainActivity : Activity() {
     private lateinit var sessions: TextView
     private lateinit var helpSwitch: Switch
     private lateinit var helpViews: List<View>
+    private lateinit var thresholdOffset: KnobView
+    private lateinit var bandSwitch: Switch
+    private lateinit var bandOffsets: BandOffsetView
+    private lateinit var bandSelected: TextView
+
+    /** Selected band for per-band editing, as a 1/6-octave index so it survives layout changes. */
+    private var selectedFineBand = 10
 
     /** Guards against feedback loops while the UI is being filled from state. */
     private var rendering = false
@@ -122,6 +130,10 @@ class MainActivity : Activity() {
         sessions = findViewById(R.id.sessions)
         helpSwitch = findViewById(R.id.helpSwitch)
         helpViews = viewsTagged(findViewById(R.id.root), HELP_TAG)
+        thresholdOffset = findViewById(R.id.thresholdOffset)
+        bandSwitch = findViewById(R.id.bandSwitch)
+        bandOffsets = findViewById(R.id.bandOffsets)
+        bandSelected = findViewById(R.id.bandSelected)
 
         band.labels = Focus.entries.associateWith { focusName(it) }
         curve.axisLabel = getString(R.string.curve_axis)
@@ -141,7 +153,8 @@ class MainActivity : Activity() {
         }
         // Shown as approximate depth, like the Range / Depth controls of Pro-DS and soothe2.
         intensity.formatter = { v ->
-            getString(R.string.depth_format, DspMapping.estimatedDepthDb(v, AppState.params.mix))
+            val p = AppState.params
+            getString(R.string.depth_format, DspMapping.estimatedDepthDb(v, p.mix, p.thresholdOffsetDb))
         }
 
         val d = DeEsserParams()
@@ -150,6 +163,39 @@ class MainActivity : Activity() {
         dbKnob(outputGain, R.string.knob_output, d.outputGainDb, -12f, 6f, 0xFFA0AEC0.toInt()) { p, v -> p.copy(outputGainDb = v) }
         freqKnob(shelfFreq, R.string.knob_shelf_freq, d.shelfFreqHz, 2_000f, 16_000f) { p, v -> p.copy(shelfFreqHz = v) }
         dbKnob(shelfGain, R.string.knob_shelf_gain, d.shelfGainDb, -18f, 0f, 0xFFE2E8F0.toInt()) { p, v -> p.copy(shelfGainDb = v) }
+        val range = DspMapping.THRESHOLD_OFFSET_RANGE_DB
+        dbKnob(thresholdOffset, R.string.knob_threshold, d.thresholdOffsetDb, -range, range, 0xFFF687B3.toInt()) { p, v ->
+            p.copy(thresholdOffsetDb = v)
+        }
+
+        // Per-band thresholds: tap a band to select it, change it with the buttons.
+        bandOffsets.onSelect = { i ->
+            selectedFineBand = DspMapping.fineBandsOf(DspMapping.layout(AppState.params), i).first
+            render()
+        }
+        bandSwitch.setOnCheckedChangeListener { _, on ->
+            if (!rendering) AppState.update { it.copy(bandOffsetsEnabled = on) }
+        }
+        fun editSelected(change: (DeEsserParams, DspMapping.Layout, Int) -> DeEsserParams) {
+            AppState.update { p ->
+                val layout = DspMapping.layout(p)
+                change(p, layout, selectedBandIn(layout))
+            }
+        }
+        findViewById<Button>(R.id.bandMinus).setOnClickListener {
+            editSelected { p, l, i -> DspMapping.withBandOffsetDelta(p, l, i, -1f) }
+        }
+        findViewById<Button>(R.id.bandPlus).setOnClickListener {
+            editSelected { p, l, i -> DspMapping.withBandOffsetDelta(p, l, i, 1f) }
+        }
+        findViewById<Button>(R.id.bandZero).setOnClickListener {
+            editSelected { p, l, i -> DspMapping.withBandOffsetCleared(p, l, i) }
+        }
+        findViewById<Button>(R.id.bandResetAll).setOnClickListener {
+            confirm(getString(R.string.band_reset_all_confirm)) {
+                AppState.update { it.copy(bandOffsetsDb = DspMapping.ZERO_BAND_OFFSETS) }
+            }
+        }
 
         focusGroup.setOnCheckedChangeListener { _, id ->
             if (rendering) return@setOnCheckedChangeListener
@@ -434,7 +480,7 @@ class MainActivity : Activity() {
             band.params = p
             curve.color = color
             curve.setCurve(
-                thresholdDb = DspMapping.marginDb(fp.processing),
+                thresholdDb = DspMapping.marginDb(fp.processing) + p.thresholdOffsetDb,
                 ratio = DspMapping.ratio(fp.intensity, p.mix),
                 kneeDb = DspMapping.kneeDb(p.sharpness),
                 enabled = fp.enabled,
@@ -475,6 +521,10 @@ class MainActivity : Activity() {
             shelfFreq.isEnabled = p.shelfEnabled
             shelfGain.isEnabled = p.shelfEnabled
             shelfSwitch.isChecked = p.shelfEnabled
+
+            thresholdOffset.value = p.thresholdOffsetDb
+            intensity.invalidate() // its readout depends on MIX and THRESHOLD
+            renderBandOffsets(p)
 
             applyGroup.check(if (p.applyMode == ApplyMode.SESSIONS) R.id.applySessions else R.id.applyGlobal)
             bootSwitch.isChecked = p.startOnBoot
@@ -545,6 +595,32 @@ class MainActivity : Activity() {
             val hz = OutputRate.mediaOutputHz()
             if (hz > 0) append('\n').append(getString(R.string.status_output_rate, fmtKhz(hz)))
         }
+    }
+
+    /** Analysis band of [layout] that contains the selected 1/6-octave band. */
+    private fun selectedBandIn(layout: DspMapping.Layout): Int {
+        val per = DspMapping.FINE_BAND_COUNT / layout.analysisBands
+        return (selectedFineBand.coerceIn(0, DspMapping.FINE_BAND_COUNT - 1) / per + 1)
+    }
+
+    private fun renderBandOffsets(p: DeEsserParams) {
+        val layout = DspMapping.layout(p)
+        val i = selectedBandIn(layout)
+        bandSwitch.isChecked = p.bandOffsetsEnabled
+        bandOffsets.params = p
+        bandOffsets.selected = i
+        val stored = DspMapping.fineBandsOf(layout, i).map { p.bandOffsetsDb.getOrElse(it) { 0f } }.average().toFloat()
+        val text = StringBuilder(
+            getString(
+                R.string.band_selected,
+                BandView.fmtHz(layout.bandLow(i)), BandView.fmtHz(layout.bandHigh(i)), "%+.1f dB".format(stored),
+            ),
+        )
+        when {
+            !p.bandOffsetsEnabled -> text.append('\n').append(getString(R.string.band_selected_off))
+            DspMapping.bandSettings(p)[i].owner == null -> text.append('\n').append(getString(R.string.band_not_processed))
+        }
+        bandSelected.text = text
     }
 
     private fun fmtKhz(hz: Int): String =

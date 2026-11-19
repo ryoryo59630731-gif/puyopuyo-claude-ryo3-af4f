@@ -101,7 +101,9 @@ class BandView @JvmOverloads constructor(
             canvas.drawRect(l, top, r, bottom, fillPaint)
             val v = liveValues?.get(i)
             if (v != null && !v.isNaN()) {
-                val margin = if (owner != null) DspMapping.marginDb(params.focus(owner).processing) else Float.NaN
+                val margin = if (owner != null) {
+                    DspMapping.marginDb(params.focus(owner).processing) + DspMapping.thresholdShiftDb(params, layout, i)
+                } else Float.NaN
                 val over = !margin.isNaN() && v >= margin
                 barPaint.color = if (over && owner != null) FocusColors.of(owner) else 0xFF8C96A6.toInt()
                 barPaint.alpha = if (over) 255 else 150

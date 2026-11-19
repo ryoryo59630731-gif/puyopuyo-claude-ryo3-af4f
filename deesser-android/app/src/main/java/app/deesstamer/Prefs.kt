@@ -44,6 +44,9 @@ class Prefs(context: Context) {
             // Key kept from v1 ("target") so the apply-mode choice survives the update.
             applyMode = enumOr(sp.getString("target", null), d.applyMode),
             startOnBoot = sp.getBoolean("startOnBoot", d.startOnBoot),
+            thresholdOffsetDb = sp.getFloat("thresholdOffsetDb", d.thresholdOffsetDb),
+            bandOffsetsEnabled = sp.getBoolean("bandOffsetsEnabled", d.bandOffsetsEnabled),
+            bandOffsetsDb = PresetCodec.parseOffsets(sp.getString("bandOffsetsDb", null)),
         )
     }
 
@@ -62,6 +65,9 @@ class Prefs(context: Context) {
             .putFloat("outputGainDb", p.outputGainDb)
             .putString("target", p.applyMode.name)
             .putBoolean("startOnBoot", p.startOnBoot)
+            .putFloat("thresholdOffsetDb", p.thresholdOffsetDb)
+            .putBoolean("bandOffsetsEnabled", p.bandOffsetsEnabled)
+            .putString("bandOffsetsDb", PresetCodec.formatOffsets(p.bandOffsetsDb))
             .apply()
     }
 

@@ -93,11 +93,64 @@ object DspMapping {
     }
 
     /**
-     * Reduction for a spike [DEPTH_REFERENCE_OVERSHOOT_DB] above the threshold. Shown next to
-     * INTENSITY as an approximate "range"/"depth" (DynamicsProcessing cannot cap reduction).
+     * Reduction for a spike [DEPTH_REFERENCE_OVERSHOOT_DB] above the normal threshold (before
+     * [thresholdOffsetDb]; lowering the threshold makes the same spike overshoot by more).
+     * Shown next to INTENSITY as an approximate "range"/"depth" (DynamicsProcessing cannot
+     * cap reduction).
      */
-    fun estimatedDepthDb(intensity: Float, mix: Float): Float =
-        DEPTH_REFERENCE_OVERSHOOT_DB * (1f - 1f / ratio(intensity, mix))
+    fun estimatedDepthDb(intensity: Float, mix: Float, thresholdOffsetDb: Float = 0f): Float =
+        max(0f, DEPTH_REFERENCE_OVERSHOOT_DB - thresholdOffsetDb) * (1f - 1f / ratio(intensity, mix))
+
+    // ---- threshold offsets: global knob + optional per-band fine tuning ----
+
+    /** Both offsets are limited to ±this many dB. */
+    const val THRESHOLD_OFFSET_RANGE_DB = 12f
+
+    /** Per-band offsets are stored per 1/6-octave analysis band (the finer layout). */
+    const val FINE_BAND_COUNT = 20
+
+    val ZERO_BAND_OFFSETS: List<Float> = List(FINE_BAND_COUNT) { 0f }
+
+    private fun clampOffset(db: Float) = db.coerceIn(-THRESHOLD_OFFSET_RANGE_DB, THRESHOLD_OFFSET_RANGE_DB)
+
+    /** Stored fine bands (0-based) that make up analysis band [i] (1-based) of [layout]. */
+    fun fineBandsOf(layout: Layout, i: Int): IntRange {
+        val per = FINE_BAND_COUNT / layout.analysisBands
+        return (i - 1) * per until i * per
+    }
+
+    /** Per-band offset of analysis band [i], or 0 when the per-band adjustment is off. */
+    fun bandOffsetDb(p: DeEsserParams, layout: Layout, i: Int): Float {
+        if (!p.bandOffsetsEnabled || i !in layout.analysisRange) return 0f
+        val r = fineBandsOf(layout, i)
+        return r.map { p.bandOffsetsDb.getOrElse(it) { 0f } }.average().toFloat()
+    }
+
+    /** Everything that moves band [i]'s threshold besides the usual level and PROCESSING. */
+    fun thresholdShiftDb(p: DeEsserParams, layout: Layout, i: Int): Float =
+        p.thresholdOffsetDb + bandOffsetDb(p, layout, i)
+
+    /** Moves analysis band [i]'s offset by [deltaDb] (both halves alike in the coarse layout). */
+    fun withBandOffsetDelta(p: DeEsserParams, layout: Layout, i: Int, deltaDb: Float): DeEsserParams {
+        if (i !in layout.analysisRange) return p
+        val r = fineBandsOf(layout, i)
+        val list = List(FINE_BAND_COUNT) { k ->
+            val v = p.bandOffsetsDb.getOrElse(k) { 0f }
+            if (k in r) clampOffset(v + deltaDb) else v
+        }
+        return p.copy(bandOffsetsDb = list)
+    }
+
+    /** Sets analysis band [i]'s offset back to 0. */
+    fun withBandOffsetCleared(p: DeEsserParams, layout: Layout, i: Int): DeEsserParams {
+        if (i !in layout.analysisRange) return p
+        val r = fineBandsOf(layout, i)
+        return p.copy(bandOffsetsDb = List(FINE_BAND_COUNT) { k -> if (k in r) 0f else p.bandOffsetsDb.getOrElse(k) { 0f } })
+    }
+
+    /** Stored offsets made safe: exactly [FINE_BAND_COUNT] values, finite, within range. */
+    fun sanitizeBandOffsets(values: List<Float>?): List<Float> =
+        List(FINE_BAND_COUNT) { k -> values?.getOrNull(k)?.takeIf { it.isFinite() }?.let(::clampOffset) ?: 0f }
 
     /** Sharp = hard knee, soft = 12 dB knee. */
     fun kneeDb(sharpness: Float): Float = lerp(12f, 0f, pct(sharpness))
@@ -169,7 +222,7 @@ object DspMapping {
                 BandSetting(
                     cutoffHz = layout.cutoffs[i],
                     owner = owner,
-                    thresholdDb = (ref + marginDb(fp.processing)).coerceIn(-90f, 0f),
+                    thresholdDb = (ref + marginDb(fp.processing) + thresholdShiftDb(p, layout, i)).coerceIn(-90f, 0f),
                     ratio = ratio(fp.intensity, p.mix),
                     kneeDb = knee,
                     attackMs = owner.baseAttackMs * tf * ftf,

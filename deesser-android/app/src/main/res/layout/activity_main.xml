@@ -257,12 +257,95 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1" />
+
+            <app.deesstamer.ui.KnobView
+                android:id="@+id/thresholdOffset"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1" />
         </LinearLayout>
 
         <TextView
             style="@style/Hint"
             android:tag="help"
             android:text="@string/hint_common" />
+
+        <!-- Per-band threshold fine tuning -->
+        <TextView
+            style="@style/SectionTitle"
+            android:text="@string/section_bands" />
+
+        <LinearLayout
+            style="@style/Panel"
+            android:orientation="vertical">
+
+            <Switch
+                android:id="@+id/bandSwitch"
+                style="@style/SettingSwitch"
+                android:text="@string/band_switch" />
+
+            <app.deesstamer.ui.BandOffsetView
+                android:id="@+id/bandOffsets"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" />
+
+            <TextView
+                android:id="@+id/bandSelected"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:textColor="@color/text"
+                android:textSize="14sp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/bandMinus"
+                    android:textAllCaps="false"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="@string/band_minus" />
+
+                <Button
+                    android:id="@+id/bandPlus"
+                    android:textAllCaps="false"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="@string/band_plus" />
+
+                <Button
+                    android:id="@+id/bandZero"
+                    android:textAllCaps="false"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="@string/band_zero" />
+
+                <Button
+                    android:id="@+id/bandResetAll"
+                    android:textAllCaps="false"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:minHeight="48dp"
+                    android:text="@string/band_reset_all" />
+            </LinearLayout>
+
+            <TextView
+                style="@style/Hint"
+                android:tag="help"
+                android:text="@string/hint_bands" />
+        </LinearLayout>
 
         <!-- High shelf -->
         <TextView

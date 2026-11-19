@@ -37,6 +37,64 @@ class DspMappingTest {
     }
 
     @Test
+    fun globalThresholdOffsetMovesEveryOwnedBandAndDeepensTheReadout() {
+        val base = DeEsserParams(autoLevel = false)
+        val lower = base.copy(thresholdOffsetDb = -6f)
+        val a = DspMapping.bandSettings(base)
+        val b = DspMapping.bandSettings(lower)
+        for (i in a.indices) {
+            if (a[i].owner == null) {
+                assertEquals("pass-through bands stay neutral", 1f, b[i].ratio, 0f)
+            } else {
+                assertEquals(a[i].thresholdDb - 6f, b[i].thresholdDb, 1e-3f)
+            }
+        }
+        // The request: about -17 dB at full intensity and mix with the threshold 6 dB lower.
+        assertEquals(11.4f, DspMapping.estimatedDepthDb(100f, 100f), 0.05f)
+        assertEquals(17.1f, DspMapping.estimatedDepthDb(100f, 100f, -6f), 0.05f)
+        assertEquals(0f, DspMapping.estimatedDepthDb(100f, 100f, 12f), 1e-4f)
+    }
+
+    @Test
+    fun perBandOffsetsOnlyWhenEnabledAndShareStorageBetweenLayouts() {
+        assertEquals(sixth.analysisBands, DspMapping.FINE_BAND_COUNT)
+        var p = DeEsserParams()
+        // Third-octave band 5 = sixth-octave bands 9 and 10 = stored indices 8 and 9.
+        assertEquals(8..9, DspMapping.fineBandsOf(third, 5))
+        p = DspMapping.withBandOffsetDelta(p, third, 5, -4f)
+        assertEquals(listOf(-4f, -4f), p.bandOffsetsDb.subList(8, 10))
+        assertEquals("ignored while switched off", 0f, DspMapping.bandOffsetDb(p, third, 5), 0f)
+        p = p.copy(bandOffsetsEnabled = true)
+        assertEquals(-4f, DspMapping.bandOffsetDb(p, third, 5), 1e-4f)
+        assertEquals(-4f, DspMapping.bandOffsetDb(p, sixth, 9), 1e-4f)
+        assertEquals(0f, DspMapping.bandOffsetDb(p, sixth, 11), 1e-4f)
+        // Fine edit seen from the coarse layout: mean of the two halves.
+        p = DspMapping.withBandOffsetDelta(p, sixth, 10, 2f)
+        assertEquals(-3f, DspMapping.bandOffsetDb(p, third, 5), 1e-4f)
+        // Global and per-band add up in the threshold.
+        p = p.copy(thresholdOffsetDb = -2f)
+        assertEquals(-5f, DspMapping.thresholdShiftDb(p, third, 5), 1e-4f)
+        // Limits and clearing.
+        p = DspMapping.withBandOffsetDelta(p, third, 1, -100f)
+        assertEquals(-12f, p.bandOffsetsDb[0], 0f)
+        p = DspMapping.withBandOffsetCleared(p, third, 1)
+        assertEquals(0f, p.bandOffsetsDb[0], 0f)
+        assertEquals(DspMapping.FINE_BAND_COUNT, DspMapping.sanitizeBandOffsets(listOf(99f, Float.NaN)).size)
+        assertEquals(12f, DspMapping.sanitizeBandOffsets(listOf(99f))[0], 0f)
+    }
+
+    @Test
+    fun perBandOffsetReachesTheCompressorThreshold() {
+        val p0 = DeEsserParams(autoLevel = false)
+        val i = third.analysisRange.first { DspMapping.bandSettings(p0)[it].owner != null }
+        val p1 = DspMapping.withBandOffsetDelta(p0, third, i, -5f).copy(bandOffsetsEnabled = true)
+        val a = DspMapping.bandSettings(p0)
+        val b = DspMapping.bandSettings(p1)
+        assertEquals(a[i].thresholdDb - 5f, b[i].thresholdDb, 1e-3f)
+        for (k in a.indices) if (k != i) assertEquals(a[k].thresholdDb, b[k].thresholdDb, 1e-3f)
+    }
+
+    @Test
     fun processingMapsToMarginOverUsualLevel() {
         assertEquals(30f, DspMapping.marginDb(0f), 1e-4f)
         assertEquals(10f, DspMapping.marginDb(50f), 1e-4f)

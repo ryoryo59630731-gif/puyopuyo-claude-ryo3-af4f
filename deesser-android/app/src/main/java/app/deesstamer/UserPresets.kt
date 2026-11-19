@@ -41,7 +41,17 @@ object PresetCodec {
         put("shelf.freq", p.shelfFreqHz)
         put("shelf.gain", p.shelfGainDb)
         put("output", p.outputGainDb)
+        put("threshold", p.thresholdOffsetDb)
+        put("bands.enabled", p.bandOffsetsEnabled)
+        put("bands.offsets", formatOffsets(p.bandOffsetsDb))
     }.trimEnd()
+
+    /** Per-band offsets as "a,b,c,…" (one value per 1/6-octave band). */
+    fun formatOffsets(values: List<Float>): String = values.joinToString(",")
+
+    /** Reads [formatOffsets] output; anything missing or unreadable becomes 0, values are clamped. */
+    fun parseOffsets(text: String?): List<Float> =
+        DspMapping.sanitizeBandOffsets(text?.split(',')?.map { it.trim().toFloatOrNull() ?: Float.NaN })
 
     /** Applies the stored sound settings on top of [current]. */
     fun decode(text: String, current: DeEsserParams): DeEsserParams {
@@ -74,6 +84,10 @@ object PresetCodec {
             shelfFreqHz = f("shelf.freq", p.shelfFreqHz),
             shelfGainDb = f("shelf.gain", p.shelfGainDb),
             outputGainDb = f("output", p.outputGainDb),
+            thresholdOffsetDb = f("threshold", p.thresholdOffsetDb)
+                .coerceIn(-DspMapping.THRESHOLD_OFFSET_RANGE_DB, DspMapping.THRESHOLD_OFFSET_RANGE_DB),
+            bandOffsetsEnabled = b("bands.enabled", p.bandOffsetsEnabled),
+            bandOffsetsDb = m["bands.offsets"]?.let(::parseOffsets) ?: p.bandOffsetsDb,
         )
     }
 

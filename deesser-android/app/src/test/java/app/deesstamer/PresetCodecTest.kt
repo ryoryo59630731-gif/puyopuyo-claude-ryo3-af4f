@@ -18,6 +18,9 @@ class PresetCodecTest {
         shelfFreqHz = 9_500f,
         shelfGainDb = -6.5f,
         outputGainDb = 1.5f,
+        thresholdOffsetDb = -4.5f,
+        bandOffsetsEnabled = true,
+        bandOffsetsDb = List(DspMapping.FINE_BAND_COUNT) { k -> (k % 5 - 2) * 1.5f },
     )
 
     @Test
@@ -38,6 +41,9 @@ class PresetCodecTest {
         assertEquals(custom.shelfFreqHz, p.shelfFreqHz, 0f)
         assertEquals(custom.shelfGainDb, p.shelfGainDb, 0f)
         assertEquals(custom.outputGainDb, p.outputGainDb, 0f)
+        assertEquals(custom.thresholdOffsetDb, p.thresholdOffsetDb, 0f)
+        assertEquals(custom.bandOffsetsEnabled, p.bandOffsetsEnabled)
+        assertEquals(custom.bandOffsetsDb, p.bandOffsetsDb)
         // ...where / how it runs stays as it was.
         assertEquals(ApplyMode.SESSIONS, p.applyMode)
         assertTrue(p.startOnBoot)
@@ -73,6 +79,17 @@ class PresetCodecTest {
         assertEquals(22f, p.sharpness, 0f) // unreadable value: keep current
         assertEquals(100f, p.vocal.intensity, 0f) // clamped
         assertEquals(current.guitar, p.guitar)
+    }
+
+    @Test
+    fun presetsSavedBeforeThresholdsKeepTheCurrentOnes() {
+        val current = DeEsserParams(thresholdOffsetDb = -3f, bandOffsetsEnabled = true)
+        val old = "v=1\nmix=70" // written before the threshold settings existed
+        val p = PresetCodec.decode(old, current)
+        assertEquals(-3f, p.thresholdOffsetDb, 0f)
+        assertTrue(p.bandOffsetsEnabled)
+        assertEquals(DspMapping.FINE_BAND_COUNT, PresetCodec.parseOffsets("1,2").size)
+        assertEquals(listOf(1f, 0f, 12f), PresetCodec.parseOffsets("1,x,40").take(3))
     }
 
     @Test

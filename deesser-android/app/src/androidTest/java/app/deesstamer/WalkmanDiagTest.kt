@@ -179,6 +179,22 @@ class WalkmanDiagTest {
         }
     }
 
+    /** THRESHOLD (global) and per-band offsets on a loud 7 kHz tone, default targets. */
+    @Test
+    fun thresholdOffsets() {
+        val d = DeEsserParams(autoLevel = false)
+        val third = DspMapping.layout(Resolution.THIRD)
+        fun bandOf(hz: Float) = third.analysisRange.first { hz >= third.bandLow(it) && hz < third.bandHigh(it) }
+        val b7k = bandOf(7_000f)
+        val b3k = bandOf(3_000f)
+        scenario("thr default", false, d, 7_000.0, 0.3)
+        scenario("thr global -6", false, d.copy(thresholdOffsetDb = -6f), 7_000.0, 0.3)
+        scenario("thr global +6", false, d.copy(thresholdOffsetDb = 6f), 7_000.0, 0.3)
+        scenario("thr band7k -6", false, DspMapping.withBandOffsetDelta(d, third, b7k, -6f).copy(bandOffsetsEnabled = true), 7_000.0, 0.3)
+        scenario("thr band7k -6 off", false, DspMapping.withBandOffsetDelta(d, third, b7k, -6f), 7_000.0, 0.3)
+        scenario("thr band3k -6", false, DspMapping.withBandOffsetDelta(d, third, b3k, -6f).copy(bandOffsetsEnabled = true), 7_000.0, 0.3)
+    }
+
     @Test
     fun rmsReduction() {
         val strong = DeEsserParams(
