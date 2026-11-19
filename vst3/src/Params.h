@@ -27,7 +27,11 @@ inline const juce::String selected { "selected" }, sharpness { "sharpness" }, mi
     output { "output" }, selectivity { "selectivity" }, resolution { "resolution" }, analysis { "analysis" },
     reference { "reference" }, listen { "listen" }, shelfOn { "shelf_on" },
     shelfFreq { "shelf_freq" }, shelfGain { "shelf_gain" }, customAttack { "custom_att" },
-    customRelease { "custom_rel" };
+    customRelease { "custom_rel" }, threshold { "threshold" }, thresholdMode { "threshold_mode" };
+
+/** Per-band threshold trim of profile band k (0..31, 1/6 octave from 397 Hz). */
+inline juce::String trimId (int k) { return "trim_" + juce::String (k).paddedLeft ('0', 2); }
+constexpr float kTrimRangeDb = 20.0f;
 
 inline juce::NormalisableRange<float> logRange (float lo, float hi)
 {
@@ -54,6 +58,12 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     auto msAttr = AudioParameterFloatAttributes().withLabel ("ms").withStringFromValueFunction (
         [] (float v, int) { return v < 10.0f ? String (v, 1) + " ms" : String ((int) v) + " ms"; });
     auto hzAttr = AudioParameterFloatAttributes().withLabel ("Hz").withStringFromValueFunction (hzText);
+    auto signedDb = [] (float v, int) { return (v > 0.0f ? "+" : "") + String (v, 1) + " dB"; };
+    // PROCESSING also shows the threshold it gives: how far over the usual level a band must go.
+    auto procAttr = AudioParameterFloatAttributes().withLabel ("%").withStringFromValueFunction ([] (float v, int) {
+        const int m = roundToInt (marginDb (v));
+        return String (roundToInt (v)) + " % (" + (m > 0 ? "+" : "") + String (m) + " dB)";
+    });
 
     for (int f = 0; f < kNumFocus; ++f)
     {
@@ -65,7 +75,7 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "high"), 1 }, name + " High",
                                                            logRange (kMinFreqHz, kMaxFreqHz), fs.highHz, hzAttr));
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "proc"), 1 }, name + " Processing",
-                                                           NormalisableRange<float> (0.0f, 100.0f), fs.processing, pctAttr));
+                                                           NormalisableRange<float> (0.0f, 100.0f), fs.processing, procAttr));
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id (f, "int"), 1 }, name + " Intensity",
                                                            NormalisableRange<float> (0.0f, 100.0f), fs.intensity, pctAttr));
         layout.add (std::make_unique<AudioParameterChoice> (ParameterID { id (f, "ch"), 1 }, name + " Channel",
@@ -102,6 +112,23 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
                                                        logRange (2000.0f, 16000.0f), d.shelfHz, hzAttr));
     layout.add (std::make_unique<AudioParameterFloat> (ParameterID { shelfGain, 1 }, "Shelf Gain",
                                                        NormalisableRange<float> (-18.0f, 0.0f, 0.1f), d.shelfDb, dbAttr));
+    layout.add (std::make_unique<AudioParameterFloat> (ParameterID { threshold, 1 }, "Threshold",
+                                                       NormalisableRange<float> (-20.0f, 20.0f, 0.5f), d.thresholdDb,
+                                                       AudioParameterFloatAttributes().withLabel ("dB").withStringFromValueFunction (signedDb)));
+    layout.add (std::make_unique<AudioParameterChoice> (ParameterID { thresholdMode, 1 }, "Threshold Mode",
+                                                        StringArray { "All bands", "Per band" }, d.perBandThreshold ? 1 : 0));
+    // Per-band trims: edited by dragging in the reference view, saved with the project / presets / A-B,
+    // but not offered for automation (32 of them would only clutter the host's list).
+    for (int k = 0; k < kProfileBands; ++k)
+    {
+        const float hz = std::sqrt (profileEdgeHz (k) * profileEdgeHz (k + 1));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { trimId (k), 1 }, "Band Trim " + hzText (hz, 0),
+                                                           NormalisableRange<float> (-kTrimRangeDb, kTrimRangeDb, 0.5f), 0.0f,
+                                                           AudioParameterFloatAttributes()
+                                                               .withLabel ("dB")
+                                                               .withStringFromValueFunction (signedDb)
+                                                               .withAutomatable (false)));
+    }
     return layout;
 }
 
@@ -110,7 +137,8 @@ struct Raw
 {
     std::array<std::array<std::atomic<float>*, 6>, kNumFocus> focus {};
     std::atomic<float>*sel {}, *sharp {}, *mixP {}, *rangeP {}, *out {}, *selP {}, *res {}, *ana {}, *refP {},
-        *listenP {}, *shelfOnP {}, *shelfHz {}, *shelfDb {}, *att {}, *rel {};
+        *listenP {}, *shelfOnP {}, *shelfHz {}, *shelfDb {}, *att {}, *rel {}, *thr {}, *thrMode {};
+    std::array<std::atomic<float>*, kProfileBands> trims {};
 
     explicit Raw (juce::AudioProcessorValueTreeState& s)
     {
@@ -133,6 +161,10 @@ struct Raw
         shelfDb = s.getRawParameterValue (shelfGain);
         att = s.getRawParameterValue (customAttack);
         rel = s.getRawParameterValue (customRelease);
+        thr = s.getRawParameterValue (threshold);
+        thrMode = s.getRawParameterValue (thresholdMode);
+        for (int k = 0; k < kProfileBands; ++k)
+            trims[(size_t) k] = s.getRawParameterValue (trimId (k));
     }
 
     Settings read() const
@@ -164,6 +196,10 @@ struct Raw
         s.shelfOn = shelfOnP->load() > 0.5f;
         s.shelfHz = shelfHz->load();
         s.shelfDb = shelfDb->load();
+        s.thresholdDb = thr->load();
+        s.perBandThreshold = thrMode->load() > 0.5f;
+        for (int k = 0; k < kProfileBands; ++k)
+            s.bandTrimDb[(size_t) k] = trims[(size_t) k]->load();
         return s;
     }
 };

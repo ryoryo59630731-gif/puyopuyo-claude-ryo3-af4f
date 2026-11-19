@@ -179,6 +179,10 @@ std::vector<std::pair<juce::String, float>> SasariProcessor::programValues (int 
     v.emplace_back (shelfOn, s.shelfOn ? 1.0f : 0.0f);
     v.emplace_back (shelfFreq, s.shelfHz);
     v.emplace_back (shelfGain, s.shelfDb);
+    // Factory presets use one threshold for all bands; the per-band trims are left as they are
+    // (unused while the mode is "all bands"), so switching back to "per band" brings them back.
+    v.emplace_back (threshold, s.thresholdDb);
+    v.emplace_back (thresholdMode, s.perBandThreshold ? 1.0f : 0.0f);
     return v;
 }
 
@@ -349,6 +353,51 @@ void SasariProcessor::startLearn()
     undoManager.beginNewTransaction();
     setParam (sasari::params::reference, (float) sasari::Reference::Learned);
     engine.requestLearn();
+}
+
+// ---- per-band threshold trims ----
+
+namespace
+{
+template <typename Fn>
+void forTrimParams (SasariProcessor& p, const sasari::Layout& layout, int band, Fn&& fn)
+{
+    const int per = sasari::profileBandsPer (layout), first = sasari::profileOffset (layout) + band * per;
+    for (int j = 0; j < per; ++j)
+        if (juce::isPositiveAndBelow (first + j, sasari::kProfileBands))
+            if (auto* prm = p.apvts.getParameter (sasari::params::trimId (first + j)))
+                fn (*prm);
+}
+} // namespace
+
+float SasariProcessor::getBandTrim (const sasari::Layout& layout, int band) const
+{
+    auto s = raw.read();
+    s.perBandThreshold = true; // the stored value, whatever the mode
+    return sasari::bandTrimDb (s, layout, band);
+}
+
+void SasariProcessor::beginBandTrimGesture (const sasari::Layout& layout, int band)
+{
+    forTrimParams (*this, layout, band, [] (juce::RangedAudioParameter& prm) { prm.beginChangeGesture(); });
+}
+
+void SasariProcessor::setBandTrim (const sasari::Layout& layout, int band, float db)
+{
+    const float v = juce::jlimit (-sasari::params::kTrimRangeDb, sasari::params::kTrimRangeDb, db);
+    forTrimParams (*this, layout, band, [v] (juce::RangedAudioParameter& prm) { prm.setValueNotifyingHost (prm.convertTo0to1 (v)); });
+}
+
+void SasariProcessor::endBandTrimGesture (const sasari::Layout& layout, int band)
+{
+    forTrimParams (*this, layout, band, [] (juce::RangedAudioParameter& prm) { prm.endChangeGesture(); });
+}
+
+void SasariProcessor::resetBandTrims()
+{
+    undoManager.beginNewTransaction();
+    for (int k = 0; k < sasari::kProfileBands; ++k)
+        setParam (sasari::params::trimId (k), 0.0f);
 }
 
 // ---- A/B ----

@@ -68,14 +68,31 @@ public:
     void resized() override;
     void tick();
 
+    // Per-band threshold editing in the reference view (per-band mode): drag a band's white line
+    // up / down, double-click to set it back to 0 dB.
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+
+    static constexpr float kRefTopDb = 0.0f, kRefBottomDb = -90.0f; // vertical range of the reference view
+
 private:
     void paintSpectrum (juce::Graphics&);
     void paintReference (juce::Graphics&);
+    bool editingTrims() const;
+    /** The analysed band under x in the reference view, or -1. */
+    int bandAt (float x, const sasari::Layout& layout) const;
+    juce::Rectangle<float> referencePlot() const;
 
     SasariProcessor& proc;
     std::array<float, sasari::Engine::kSpecPoints> in {}, out {};
     std::array<float, sasari::kMaxBands> level {}; // displayed level of the reference view (fast rise, slow fall)
-    juce::TextButton viewButtons[2];
+    juce::TextButton viewButtons[2], resetTrimsButton;
+    sasari::Layout dragLayout;
+    int dragBand = -1;
+    float dragStartTrim = 0.0f, dragStartY = 0.0f;
 };
 
 /** Preset menu that rebuilds its list (factory presets + the user's saved ones) each time it opens. */
@@ -224,9 +241,12 @@ private:
         rangeKnob { "RANGE", juce::Colour (sasari::ui::Colours::red) },
         outKnob { "OUTPUT", juce::Colour (0xFFA0AEC0) },
         selectivityKnob { "SELECTIVITY", juce::Colour (0xFF9AE6B4) },
+        thresholdKnob { "THRESHOLD", juce::Colour (0xFFE2E8F0) },
         shelfFreqKnob { "SHELF FREQ", juce::Colour (sasari::ui::Colours::freq) },
         shelfGainKnob { "SHELF GAIN", juce::Colour (0xFFE2E8F0) };
     juce::ToggleButton shelfOn;
+    juce::TextButton thresholdModeButtons[2]; // 一括 / 帯域ごと
+    juce::Label thresholdLabel;
     juce::ComboBox referenceBox, resolutionBox, analysisBox;
     juce::Label referenceLabel, resolutionLabel, analysisLabel, learnStatus;
     juce::TextButton learnButton;

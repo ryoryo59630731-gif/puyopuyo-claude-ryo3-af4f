@@ -171,10 +171,11 @@ void Knob::paint (juce::Graphics& g)
     auto r = getLocalBounds().removeFromBottom (32);
     g.setColour (juce::Colour (Colours::text).withAlpha (slider.isEnabled() ? 1.0f : 0.4f));
     g.setFont (juce::FontOptions (13.0f, juce::Font::bold));
-    g.drawText (slider.getTextFromValue (slider.getValue()), r.removeFromTop (16), juce::Justification::centred);
+    // Fitted so longer values such as "55 % (+8 dB)" shrink a little instead of being cut.
+    g.drawFittedText (slider.getTextFromValue (slider.getValue()), r.removeFromTop (16), juce::Justification::centred, 1, 0.7f);
     g.setColour (juce::Colour (0xFFB8C0CC));
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText (name, r, juce::Justification::centred);
+    g.drawFittedText (name, r, juce::Justification::centred, 1, 0.7f);
 }
 
 // ============================================================================ SpectrumDisplay
@@ -206,6 +207,10 @@ SpectrumDisplay::SpectrumDisplay (SasariProcessor& p) : proc (p)
         };
         addAndMakeVisible (viewButtons[i]);
     }
+    resetTrimsButton.setButtonText (jp ("補正をリセット"));
+    resetTrimsButton.setTooltip (jp ("帯域ごとのしきい値の補正をすべて 0 dB に戻します"));
+    resetTrimsButton.onClick = [this] { proc.resetBandTrims(); };
+    addChildComponent (resetTrimsButton);
 }
 
 void SpectrumDisplay::resized()
@@ -213,6 +218,84 @@ void SpectrumDisplay::resized()
     const int w = 96, x0 = getWidth() / 2 - w;
     for (int i = 0; i < 2; ++i)
         viewButtons[i].setBounds (x0 + i * w, 1, w - 2, 20);
+    resetTrimsButton.setBounds (x0 + 2 * w + 4, 1, 100, 20);
+}
+
+bool SpectrumDisplay::editingTrims() const { return proc.spectrumView == 1 && proc.currentSettings().perBandThreshold; }
+
+juce::Rectangle<float> SpectrumDisplay::referencePlot() const
+{
+    const auto area = getLocalBounds().toFloat();
+    return juce::Rectangle<float>::leftTopRightBottom (area.getX() + 36, area.getY() + 24, area.getRight() - 10, area.getBottom() - 14);
+}
+
+int SpectrumDisplay::bandAt (float px, const Layout& layout) const
+{
+    const auto r = referencePlot();
+    for (int b = 0; b < layout.numBands; ++b)
+        if (px >= FreqAxis::x (layout.low (b), r.getX(), r.getRight()) && px < FreqAxis::x (layout.high (b), r.getX(), r.getRight()))
+            return b;
+    return -1;
+}
+
+void SpectrumDisplay::mouseDown (const juce::MouseEvent& e)
+{
+    dragBand = -1;
+    if (! editingTrims() || ! referencePlot().contains (e.position))
+        return;
+    const auto s = proc.currentSettings();
+    dragLayout = Layout (s.bandsPerOctave, s.extendedRange);
+    dragBand = bandAt (e.position.x, dragLayout);
+    if (dragBand < 0)
+        return;
+    // Only bands a target works on have a threshold to move.
+    const auto plan = makePlan (s, dragLayout);
+    if ((viewDetector (s) == (int) Det::S ? plan.side : plan.mid)[(size_t) dragBand].owner < 0)
+    {
+        dragBand = -1;
+        return;
+    }
+    dragStartTrim = proc.getBandTrim (dragLayout, dragBand);
+    dragStartY = e.position.y;
+    proc.beginBandTrimGesture (dragLayout, dragBand);
+}
+
+void SpectrumDisplay::mouseDrag (const juce::MouseEvent& e)
+{
+    if (dragBand < 0)
+        return;
+    const float pxPerDb = referencePlot().getHeight() / (kRefTopDb - kRefBottomDb);
+    const float db = dragStartTrim + (dragStartY - e.position.y) / pxPerDb;
+    proc.setBandTrim (dragLayout, dragBand, std::round (db * 2.0f) / 2.0f); // 0.5 dB steps
+    repaint();
+}
+
+void SpectrumDisplay::mouseUp (const juce::MouseEvent&)
+{
+    if (dragBand >= 0)
+        proc.endBandTrimGesture (dragLayout, dragBand);
+    dragBand = -1;
+}
+
+void SpectrumDisplay::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (! editingTrims() || ! referencePlot().contains (e.position))
+        return;
+    const auto s = proc.currentSettings();
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
+    if (const int b = bandAt (e.position.x, layout); b >= 0)
+    {
+        proc.beginBandTrimGesture (layout, b);
+        proc.setBandTrim (layout, b, 0.0f);
+        proc.endBandTrimGesture (layout, b);
+        repaint();
+    }
+}
+
+void SpectrumDisplay::mouseMove (const juce::MouseEvent& e)
+{
+    const bool overBand = editingTrims() && referencePlot().contains (e.position);
+    setMouseCursor (overBand ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
 }
 
 void SpectrumDisplay::tick()
@@ -233,6 +316,7 @@ void SpectrumDisplay::tick()
     }
     for (int i = 0; i < 2; ++i)
         viewButtons[i].setToggleState (proc.spectrumView == i, juce::dontSendNotification);
+    resetTrimsButton.setVisible (editingTrims());
     repaint();
 }
 
@@ -390,10 +474,9 @@ void SpectrumDisplay::paintReference (juce::Graphics& g)
     auto area = getLocalBounds().toFloat();
     g.setColour (juce::Colour (Colours::display));
     g.fillRoundedRectangle (area, 6.0f);
-    const auto r = juce::Rectangle<float>::leftTopRightBottom (area.getX() + 36, area.getY() + 24, area.getRight() - 10,
-                                                               area.getBottom() - 14);
+    const auto r = referencePlot();
     auto x = [&] (float f) { return FreqAxis::x (f, r.getX(), r.getRight()); };
-    constexpr float topDb = 0.0f, bottomDb = -90.0f; // the top ~15 dB holds the legend and the summary
+    constexpr float topDb = kRefTopDb, bottomDb = kRefBottomDb; // the top ~15 dB holds the legend and the summary
     auto y = [&] (float db) { return r.getY() + juce::jlimit (0.0f, 1.0f, (topDb - db) / (topDb - bottomDb)) * r.getHeight(); };
     auto signedDb = [] (float v) { return (v >= 0.0f ? "+" : "") + juce::String (v, 1); };
 
@@ -462,6 +545,38 @@ void SpectrumDisplay::paintReference (juce::Graphics& g)
     g.setColour (juce::Colour (Colours::warn));
     g.strokePath (refPath, juce::PathStrokeType (2.5f));
 
+    // Threshold per owned band (white): reference + the owner's threshold (PROCESSING + THRESHOLD +
+    // per-band trim). Exact when SELECTIVITY is 0 %, a guide otherwise. In per-band mode each line
+    // has a handle to drag and shows its trim.
+    const bool perBand = s.perBandThreshold;
+    for (int b = 0; hasData && b < nb; ++b)
+    {
+        const auto& p = owners[(size_t) b];
+        if (p.owner < 0)
+            continue;
+        const float l0 = x (layout.low (b)) + 2.0f, r0 = x (layout.high (b)) - 2.0f;
+        const float ty = y (m.refDb[(size_t) d][(size_t) b].load() + p.marginDb);
+        g.setColour (juce::Colours::white.withAlpha (0.9f));
+        g.drawLine (l0, ty, r0, ty, 2.0f);
+        if (perBand)
+        {
+            const float cx = (l0 + r0) * 0.5f;
+            g.fillEllipse (cx - 4.0f, ty - 4.0f, 8.0f, 8.0f);
+            const float trim = proc.getBandTrim (layout, b);
+            if (std::abs (trim) >= 0.25f)
+            {
+                g.setColour (juce::Colour (trim > 0 ? 0xFF9AE6B4 : Colours::red));
+                g.setFont (juce::FontOptions (10.0f, juce::Font::bold));
+                g.drawText (signedDb (trim), juce::Rectangle<float> (cx - 20.0f, ty - 17.0f, 40.0f, 12.0f), juce::Justification::centred);
+            }
+        }
+    }
+    g.setFont (juce::FontOptions (10.0f));
+    g.setColour (juce::Colour (Colours::dim));
+    g.drawText (perBand ? jp ("白線を上下にドラッグ＝その帯域のしきい値を調整（上＝効きにくく）／ダブルクリック＝0 dB")
+                        : jp ("帯域ごとに調整するには、下の［帯域ごと］を押してください"),
+                r.reduced (4.0f, 2.0f), juce::Justification::bottomRight);
+
     // Selected target outline.
     std::array<int, kMaxBands> idx {};
     const int sel = s.selected;
@@ -484,13 +599,14 @@ void SpectrumDisplay::paintReference (juce::Graphics& g)
     const char* detNames[] = { "表示：L/R の大きい方", "表示：Mid（中央）", "表示：Side（左右の広がり）" };
     g.setColour (juce::Colour (Colours::dim));
     g.setFont (juce::FontOptions (11.0f));
-    g.drawText (jp (detNames[d]), juce::Rectangle<float> (area.getRight() - 200, area.getY() + 3, 190, 16), juce::Justification::centredRight);
+    g.drawFittedText (jp (detNames[d]), juce::Rectangle<int> ((int) area.getRight() - 156, (int) area.getY() + 3, 146, 16),
+                      juce::Justification::centredRight, 1, 0.75f);
 
     // Legend and the summary for the selected target: how far the reference moved from the estimate,
     // and how far the sound is above its reference right now.
     g.setFont (juce::FontOptions (10.0f));
-    g.drawText (jp ("棒＝今のレベル（赤＝削っている）  黄線＝基準レベル  点線＝固定の推定値"), r.withTrimmedLeft (4).withHeight (13),
-                juce::Justification::topLeft);
+    g.drawText (jp ("棒＝今のレベル（赤＝削っている）  黄線＝基準レベル  点線＝固定の推定値  白線＝しきい値（目安）"),
+                r.withTrimmedLeft (4).withHeight (13), juce::Justification::topLeft);
     float sumMove = 0.0f, minMove = 1.0e9f, maxMove = -1.0e9f, sumOver = 0.0f;
     int cnt = 0, cntOver = 0;
     for (int i = 0; hasData && i < n; ++i)
@@ -637,7 +753,8 @@ void CurveDisplay::paint (juce::Graphics& g)
 {
     const auto s = proc.currentSettings();
     const auto& f = s.focus[(size_t) s.selected];
-    const float thr = marginDb (f.processing), ratio = ratioFor (f.intensity), knee = kneeDb (s.sharpness);
+    // PROCESSING's threshold moved by THRESHOLD (per-band trims vary by band and are shown in the reference view).
+    const float thr = marginDb (f.processing) + s.thresholdDb, ratio = ratioFor (f.intensity), knee = kneeDb (s.sharpness);
 
     auto area = getLocalBounds().toFloat();
     g.setColour (juce::Colour (Colours::display));
@@ -882,8 +999,9 @@ SasariEditor::SasariEditor (SasariProcessor& p)
     channelLabel.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
     body.addAndMakeVisible (channelLabel);
     for (auto* k : { &lowKnob, &highKnob, &procKnob, &intKnob, &attackKnob, &releaseKnob, &sharpKnob, &mixKnob,
-                     &rangeKnob, &outKnob, &selectivityKnob, &shelfFreqKnob, &shelfGainKnob })
+                     &rangeKnob, &outKnob, &selectivityKnob, &thresholdKnob, &shelfFreqKnob, &shelfGainKnob })
         body.addAndMakeVisible (*k);
+    procKnob.slider.setTooltip (jp ("反応しやすさ。（ ）内はしきい値＝基準レベルより何 dB 大きくなったら下げ始めるか"));
     attackKnob.attach (state, params::customAttack);
     releaseKnob.attach (state, params::customRelease);
 
@@ -904,6 +1022,27 @@ SasariEditor::SasariEditor (SasariProcessor& p)
     outKnob.attach (state, params::output);
     selectivityKnob.attach (state, params::selectivity);
     selectivityKnob.slider.setTooltip (jp ("0%＝普段より大きくなったら反応／100%＝周りの帯域より突出したら反応"));
+    thresholdKnob.attach (state, params::threshold);
+    thresholdKnob.slider.setTooltip (jp ("全ターゲットのしきい値をまとめて上下します（＋で効きにくく、−で効きやすく）"));
+    const char* modeNames[] = { "一括", "帯域ごと" };
+    const char* modeTips[] = { "全部の帯域で同じしきい値（THRESHOLD と各ターゲットの PROCESSING）",
+                               "基準レベル表示で、帯域ごとにしきい値を上下に調整できます（白線をドラッグ）" };
+    for (int i = 0; i < 2; ++i)
+    {
+        thresholdModeButtons[i].setButtonText (jp (modeNames[i]));
+        thresholdModeButtons[i].setTooltip (jp (modeTips[i]));
+        thresholdModeButtons[i].onClick = [this, i] {
+            setChoice (params::thresholdMode, i);
+            if (i == 1)
+                proc.spectrumView = 1; // per-band editing happens in the reference view
+        };
+        body.addAndMakeVisible (thresholdModeButtons[i]);
+    }
+    thresholdLabel.setText (jp ("しきい値"), juce::dontSendNotification);
+    thresholdLabel.setFont (juce::FontOptions (11.0f));
+    thresholdLabel.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
+    thresholdLabel.setJustificationType (juce::Justification::centredRight);
+    body.addAndMakeVisible (thresholdLabel);
     shelfFreqKnob.attach (state, params::shelfFreq);
     shelfGainKnob.attach (state, params::shelfGain);
 
@@ -1084,6 +1223,8 @@ void SasariEditor::timerCallback()
     const int active = proc.getActiveSlot();
     for (int i = 0; i < 2; ++i)
         abButtons[i].setToggleState (i == active, juce::dontSendNotification);
+    for (int i = 0; i < 2; ++i)
+        thresholdModeButtons[i].setToggleState (i == (s.perBandThreshold ? 1 : 0), juce::dontSendNotification);
     abCopy.setButtonText (active == 0 ? jp ("A→B") : jp ("B→A"));
     undoButton.setEnabled (proc.undoManager.canUndo());
     redoButton.setEnabled (proc.undoManager.canRedo());
@@ -1175,13 +1316,16 @@ void SasariEditor::layoutBody()
     for (int i = 0; i < 6; ++i)
         targetKnobs[i]->setBounds (22 + i * 94, ky, 90, 112);
 
-    const int gy = 608;
-    Knob* commonKnobs[] = { &sharpKnob, &mixKnob, &rangeKnob, &outKnob, &selectivityKnob };
-    for (int i = 0; i < 5; ++i)
-        commonKnobs[i]->setBounds (18 + i * 82, gy, 80, 108);
-    shelfOn.setBounds (432, 598, 160, 24);
-    shelfFreqKnob.setBounds (428, gy + 20, 80, 96);
-    shelfGainKnob.setBounds (508, gy + 20, 80, 96);
+    const int gy = 612;
+    Knob* commonKnobs[] = { &sharpKnob, &mixKnob, &rangeKnob, &outKnob, &selectivityKnob, &thresholdKnob };
+    for (int i = 0; i < 6; ++i)
+        commonKnobs[i]->setBounds (16 + i * 70, gy, 70, 104);
+    thresholdLabel.setBounds (232, 590, 74, 20);
+    thresholdModeButtons[0].setBounds (308, 590, 46, 20);
+    thresholdModeButtons[1].setBounds (356, 590, 80, 20);
+    shelfOn.setBounds (442, 598, 152, 24);
+    shelfFreqKnob.setBounds (440, gy + 16, 76, 92);
+    shelfGainKnob.setBounds (516, gy + 16, 76, 92);
 
     const int cx = 604, cw = 186;
     referenceLabel.setBounds (cx, 596, cw, 14);

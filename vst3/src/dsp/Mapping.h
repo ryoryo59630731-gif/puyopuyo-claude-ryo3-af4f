@@ -52,6 +52,10 @@ struct FocusSettings
 enum class Listen : int { Normal = 0, Filter = 1, Delta = 2 };
 enum class Reference : int { Fixed = 0, Auto = 1, Learned = 2 };
 
+// The 32 1/6-octave bands from 397 Hz to 16 kHz that the learned profile and the per-band threshold
+// trims are kept on, whatever layout is in use (see the end of this file).
+constexpr int kProfileBands = 32;
+
 struct Settings
 {
     std::array<FocusSettings, kNumFocus> focus {
@@ -73,6 +77,9 @@ struct Settings
     bool shelfOn = false;
     float shelfHz = 8000.0f;
     float shelfDb = -4.0f;
+    float thresholdDb = 0.0f;       // moves every target's threshold (+ = reacts less)
+    bool perBandThreshold = false;  // false = one threshold for all bands, true = also apply bandTrimDb
+    std::array<float, kProfileBands> bandTrimDb {}; // per 1/6-octave band, added to the threshold
 };
 
 constexpr float kMinFreqHz = 400.0f;  // lowest value of the LOW / HIGH knobs
@@ -104,6 +111,27 @@ struct Layout
     float lowLimit() const { return edges[0]; }
     float highLimit() const { return edges[(size_t) numBands]; }
 };
+
+// ---- learned reference profile and per-band threshold trims (SPEC 4.3, 4.5) ----
+// Every layout's bands are made of whole profile bands (a 1/3-octave band = two of them), so values
+// kept on the profile bands convert exactly to any resolution / analysis range.
+inline float profileEdgeHz (int k) { return (float) (2000.0 * std::pow (2.0, -7.0 / 3.0 + k / 6.0)); }
+/** Index of the first profile band of a layout's band 0. */
+inline int profileOffset (const Layout& l) { return l.extended ? 0 : 12; }
+/** Profile bands per layout band. */
+inline int profileBandsPer (const Layout& l) { return l.bandsPerOctave == 6 ? 1 : 2; }
+
+/** Threshold trim (dB) of a layout band: the mean of its profile bands, 0 unless per-band mode is on. */
+inline float bandTrimDb (const Settings& s, const Layout& l, int b)
+{
+    if (! s.perBandThreshold)
+        return 0.0f;
+    const int per = profileBandsPer (l), first = profileOffset (l) + b * per;
+    float sum = 0.0f;
+    for (int j = 0; j < per; ++j)
+        sum += s.bandTrimDb[(size_t) std::clamp (first + j, 0, kProfileBands - 1)];
+    return sum / (float) per;
+}
 
 inline float pct (float v) { return std::clamp (v / 100.0f, 0.0f, 1.0f); }
 inline float lerp (float a, float b, float t) { return a + (b - a) * t; }
@@ -239,16 +267,16 @@ inline Plan makePlan (const Settings& s, const Layout& l)
             }
         }
     }
+    // The global threshold and the per-band trims move every owner of a band alike, after the
+    // owners have been chosen (so they never change which target owns a band).
+    for (int b = 0; b < l.numBands; ++b)
+    {
+        const float offset = s.thresholdDb + bandTrimDb (s, l, b);
+        for (auto* p : { &plan.mid[(size_t) b], &plan.side[(size_t) b] })
+            if (p->owner >= 0)
+                p->marginDb += offset;
+    }
     return plan;
 }
-
-// ---- learned reference profile (SPEC 4.3) ----
-// Always learned on the 32 1/6-octave bands from 397 Hz to 16 kHz, whatever layout is in use.
-// Every layout's bands are made of whole profile bands (a 1/3-octave band = two of them, power
-// summed), so a profile converts exactly to any resolution / analysis range.
-constexpr int kProfileBands = 32;
-inline float profileEdgeHz (int k) { return (float) (2000.0 * std::pow (2.0, -7.0 / 3.0 + k / 6.0)); }
-/** Index of the first profile band of a layout's band 0. */
-inline int profileOffset (const Layout& l) { return l.extended ? 0 : 12; }
 
 } // namespace sasari

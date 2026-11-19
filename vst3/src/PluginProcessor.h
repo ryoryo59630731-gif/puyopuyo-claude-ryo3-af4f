@@ -63,6 +63,15 @@ public:
     /** Learn the usual levels for a few seconds, then freeze them (switches Reference to Learned). */
     void startLearn();
 
+    /** Per-band threshold trim (dB) of a band of the given layout (mean of its 1/6-octave trims). */
+    float getBandTrim (const sasari::Layout& layout, int band) const;
+    /** Sets the trims behind a band of the given layout (one or two 1/6-octave bands). Wrap a drag in
+        begin / end so the host and undo see one gesture. */
+    void beginBandTrimGesture (const sasari::Layout& layout, int band);
+    void setBandTrim (const sasari::Layout& layout, int band, float db);
+    void endBandTrimGesture (const sasari::Layout& layout, int band);
+    void resetBandTrims();
+
     /** A/B comparison. */
     int getActiveSlot() const { return ab.active; }
     void switchToSlot (int slot);

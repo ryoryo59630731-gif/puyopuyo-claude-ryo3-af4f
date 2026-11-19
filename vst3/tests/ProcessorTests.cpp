@@ -216,6 +216,43 @@ int main (int argc, char** argv)
     set (p, analysis, 0.0f);
     set (p, reference, (float) sasari::Reference::Auto);
 
+    // ---- threshold: global knob, mode, per-band trims ----
+    std::printf ("[threshold]\n");
+    {
+        SasariProcessor q;
+        set (q, threshold, 6.0f);
+        set (q, thresholdMode, 1.0f);
+        set (q, trimId (20), 5.0f);
+        const auto st = q.currentSettings();
+        check (std::abs (st.thresholdDb - 6.0f) < 0.01f && st.perBandThreshold && std::abs (st.bandTrimDb[20] - 5.0f) < 0.01f,
+               "threshold, mode and trims reach the engine settings");
+        q.setCurrentProgram (0);
+        check (std::abs (value (q, threshold)) < 0.01f && value (q, thresholdMode) < 0.5f && std::abs (value (q, trimId (20)) - 5.0f) < 0.01f,
+               "a factory preset resets THRESHOLD and the mode but keeps the trims");
+        const sasari::Layout layout (3, false); // band 4 = 1/6-octave trims 20 and 21
+        q.setBandTrim (layout, 4, -3.0f);
+        check (std::abs (value (q, trimId (20)) + 3.0f) < 0.01f && std::abs (value (q, trimId (21)) + 3.0f) < 0.01f
+                   && std::abs (q.getBandTrim (layout, 4) + 3.0f) < 0.01f,
+               "a 1/3-octave band sets both of its 1/6-octave trims");
+        q.setBandTrim (layout, 4, 99.0f);
+        check (std::abs (value (q, trimId (20)) - kTrimRangeDb) < 0.01f, "a trim is limited to +-20 dB");
+        set (q, trimId (5), 4.0f);
+        q.switchToSlot (1);
+        set (q, trimId (5), -2.0f);
+        q.switchToSlot (0);
+        check (std::abs (value (q, trimId (5)) - 4.0f) < 0.01f, "A/B keeps each slot's trims");
+        q.resetBandTrims();
+        bool allZero = true;
+        for (int k = 0; k < sasari::kProfileBands; ++k)
+            allZero = allZero && std::abs (value (q, trimId (k))) < 0.01f;
+        check (allZero, "reset sets every trim to 0 dB");
+        auto* procParam = q.apvts.getParameter (id (1, "proc"));
+        const auto procText = procParam->getText (procParam->convertTo0to1 (55.0f), 64);
+        check (procText.contains ("+8 dB"), "PROCESSING shows its threshold: " + procText);
+        check (! q.apvts.getParameter (trimId (0))->isAutomatable() && q.apvts.getParameter (threshold)->isAutomatable(),
+               "trims are hidden from automation, THRESHOLD is not");
+    }
+
     // ---- user presets (files in a test folder) ----
     std::printf ("[user presets]\n");
     const auto presetFolder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("SasariOsaeruTestPresets");
@@ -333,14 +370,26 @@ int main (int argc, char** argv)
     p.setCurrentProgram (0);
     p.spectrumView = 1;
     juce::MessageManager::getInstance()->runDispatchLoopUntil (1500); // painted while audio runs
-    if (snapDir != juce::File())
-    {
+    auto snapshot = [&] (const juce::String& name) {
+        if (snapDir == juce::File())
+            return;
         auto img = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
-        juce::FileOutputStream os (snapDir.getChildFile ("editor_reference.png"));
+        juce::FileOutputStream os (snapDir.getChildFile (name));
         os.setPosition (0);
         os.truncate();
         juce::PNGImageFormat().writeImageToStream (img, os);
-    }
+    };
+    snapshot ("editor_reference.png");
+    // Per-band mode with a couple of trims (and a global threshold) in the reference view.
+    set (p, thresholdMode, 1.0f);
+    set (p, threshold, 2.0f);
+    p.setBandTrim (sasari::Layout (3, false), 5, 6.0f);
+    p.setBandTrim (sasari::Layout (3, false), 7, -4.0f);
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (1000);
+    snapshot ("editor_perband.png");
+    p.resetBandTrims();
+    set (p, threshold, 0.0f);
+    set (p, thresholdMode, 0.0f);
     {
         juce::MemoryBlock st;
         p.getStateInformation (st);

@@ -615,6 +615,58 @@ void testReferenceMeters()
     check (moved > 3.0f, "auto: reference rises toward a steady loud band");
 }
 
+void testThresholdAndPerBandTrims()
+{
+    const double sr = 48000;
+    auto gen = bedPlusHigh (0.3);
+    const auto ref = run (allOff(), sr, 2, gen);
+    auto cut = [&] (const Settings& s) {
+        const auto out = run (s, sr, 2, gen);
+        return toneDb (out.l, sr, 7000, 1, 2) - toneDb (ref.l, sr, 7000, 1, 2);
+    };
+    const Settings base = vocalOnly (50, 100);
+    Settings up = base, down = base;
+    up.thresholdDb = 20.0f;
+    down.thresholdDb = -10.0f;
+    const double r0 = cut (base), rUp = cut (up), rDown = cut (down);
+    std::printf ("  THRESHOLD: 0 dB %.1f, +20 dB %.1f, -10 dB %.1f\n", r0, rUp, rDown);
+    check (r0 < -6, "loud 7 kHz reduced at THRESHOLD 0 dB");
+    check (rUp > r0 + 4, "a higher THRESHOLD cuts less");
+    check (rDown <= r0 + 0.1, "a lower THRESHOLD cuts at least as much");
+
+    // Per-band trim raised only on the 1/3-octave band holding 7 kHz.
+    const Layout layout (3, false);
+    int b7 = -1;
+    for (int b = 0; b < layout.numBands; ++b)
+        if (layout.low (b) <= 7000.0f && 7000.0f < layout.high (b))
+            b7 = b;
+    Settings trimmed = base;
+    const int per = profileBandsPer (layout), first = profileOffset (layout) + b7 * per;
+    for (int j = 0; j < per; ++j)
+        trimmed.bandTrimDb[(size_t) (first + j)] = 20.0f;
+    const double rOff = cut (trimmed);
+    trimmed.perBandThreshold = true;
+    const double rOn = cut (trimmed);
+    std::printf ("  trim +20 dB on the 7 kHz band: mode 'all bands' %.1f, 'per band' %.1f\n", rOff, rOn);
+    check (std::abs (rOff - r0) < 0.3, "per-band trims are ignored in 'all bands' mode");
+    check (rOn > r0 + 4, "a raised trim on the 7 kHz band cuts it less");
+
+    const auto p0 = makePlan (base, layout), p1 = makePlan (trimmed, layout);
+    check (p1.mid[(size_t) b7].owner == p0.mid[(size_t) b7].owner
+               && std::abs (p1.mid[(size_t) b7].marginDb - p0.mid[(size_t) b7].marginDb - 20.0f) < 1.0e-3f,
+           "the trim moves that band's threshold, same owner");
+    check (p0.mid[(size_t) b7 - 1].owner >= 0 && std::abs (p1.mid[(size_t) b7 - 1].marginDb - p0.mid[(size_t) b7 - 1].marginDb) < 1.0e-3f,
+           "the neighbouring band keeps its threshold");
+    Settings half = base;
+    half.perBandThreshold = true;
+    half.bandTrimDb[(size_t) first] = 10.0f;
+    check (std::abs (bandTrimDb (half, layout, b7) - 5.0f) < 1.0e-4f, "a 1/3-octave band uses the mean of its two 1/6-octave trims");
+    Settings g = base;
+    g.thresholdDb = 7.0f;
+    check (std::abs (makePlan (g, layout).mid[(size_t) b7].marginDb - p0.mid[(size_t) b7].marginDb - 7.0f) < 1.0e-3f,
+           "THRESHOLD moves every band's threshold");
+}
+
 void testAbSlots()
 {
     AbSlots ab;
@@ -691,6 +743,7 @@ int main()
         { "learn, freeze, restore", testLearnFreezeAndRestore },
         { "spectrum meters", testSpectrumMeters },
         { "reference-level meters", testReferenceMeters },
+        { "threshold and per-band trims", testThresholdAndPerBandTrims },
         { "A/B slots", testAbSlots },
         { "no allocation while processing", testNoAllocationWhileProcessing },
     };
