@@ -251,6 +251,24 @@ int main (int argc, char** argv)
         check (procText.contains ("+8 dB"), "PROCESSING shows its threshold: " + procText);
         check (! q.apvts.getParameter (trimId (0))->isAutomatable() && q.apvts.getParameter (threshold)->isAutomatable(),
                "trims are hidden from automation, THRESHOLD is not");
+
+        // One drag (several steps, as the editor sends them) is one undo step.
+        auto* mm = juce::MessageManager::getInstance();
+        q.undoManager.beginNewTransaction();
+        set (q, range, 10.0f);
+        mm->runDispatchLoopUntil (300);
+        q.undoManager.beginNewTransaction(); // the editor's mouse-down
+        q.beginBandTrimGesture (layout, 5);
+        q.setBandTrim (layout, 5, 5.5f);
+        mm->runDispatchLoopUntil (100);
+        q.setBandTrim (layout, 5, 10.0f);
+        mm->runDispatchLoopUntil (300);
+        q.endBandTrimGesture (layout, 5);
+        q.undoManager.beginNewTransaction(); // mouse-down on the undo button
+        q.undoManager.undo();
+        mm->runDispatchLoopUntil (300);
+        check (std::abs (q.getBandTrim (layout, 5)) < 0.01f && std::abs (value (q, range) - 10.0f) < 0.01f,
+               "one drag is undone in one step: trim " + juce::String (q.getBandTrim (layout, 5)) + ", range " + juce::String (value (q, range)));
     }
 
     // ---- user presets (files in a test folder) ----
