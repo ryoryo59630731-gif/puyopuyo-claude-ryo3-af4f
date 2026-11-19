@@ -130,7 +130,10 @@ class DeviceTest {
         }
         private val wave = ByteArray(1024)
         private val m = Visualizer.MeasurementPeakRms()
-        private val sr = v.samplingRate / 1000f
+        // Not v.samplingRate: some devices (Sony NW-WM1AM2) report 44.1 kHz for a 192 kHz mix.
+        private val sr = OutputRate.pick(OutputRate.mediaOutputHz(), v.samplingRate / 1000f).also {
+            Log.i("DeviceTest", "mix meter rate ${it.toInt()} Hz (Visualizer reports ${v.samplingRate / 1000} Hz)")
+        }
 
         fun measure(ms: Long): Pair<Float, Float> {
             var hi = 0.0; var lo = 0.0; var rms = 0f; var nr = 0; var frames = 0

@@ -15,6 +15,7 @@ import android.content.pm.ServiceInfo
 import android.media.audiofx.AudioEffect
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 
 /**
  * Keeps the effects alive while other apps play audio, and listens for players that announce
@@ -170,7 +171,29 @@ class DeEsserService : Service() {
         return START_STICKY
     }
 
+    /**
+     * Swiping the app away from the recent-apps list ends it completely: the effects are
+     * released (nothing stays on the output), the measurement stops, the notification goes
+     * away and the service ends. Home / Back keep it running on purpose, so other players
+     * stay processed. The ON switch is remembered, so opening the app again resumes.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "task removed: releasing effects and stopping")
+        shutdown()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
+        shutdown()
+        super.onDestroy()
+    }
+
+    /** Releases everything the service holds. Safe to call more than once. */
+    private fun shutdown() {
+        if (stopped) return
+        stopped = true
         runCatching { unregisterReceiver(sessionReceiver) }
         AppState.removeListener(stateListener)
         tracker?.stop()
@@ -181,8 +204,9 @@ class DeEsserService : Service() {
         AppState.serviceRunning = false
         AppState.engine.detachAll()
         AppState.notifyListeners()
-        super.onDestroy()
     }
+
+    private var stopped = false
 
     private fun createChannel() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -225,6 +249,7 @@ class DeEsserService : Service() {
     }
 
     companion object {
+        private const val TAG = "DeEsserService"
         private const val CHANNEL_ID = "deesser"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "app.deesstamer.STOP"

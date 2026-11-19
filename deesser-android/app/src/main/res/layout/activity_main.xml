@@ -53,6 +53,16 @@
                 android:switchPadding="8dp" />
         </LinearLayout>
 
+        <!-- Hides every text tagged "help" below. -->
+        <Switch
+            android:id="@+id/helpSwitch"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="40dp"
+            android:text="@string/help_switch"
+            android:textColor="@color/text_dim"
+            android:textSize="13sp" />
+
         <TextView
             android:id="@+id/warning"
             style="@style/Panel"
@@ -140,11 +150,13 @@
 
             <TextView
                 android:id="@+id/focusHint"
-                style="@style/Hint" />
+                style="@style/Hint"
+                android:tag="help" />
         </LinearLayout>
 
         <TextView
             style="@style/Hint"
+            android:tag="help"
             android:text="@string/hint_focus" />
 
         <!-- Listen -->
@@ -171,6 +183,7 @@
 
         <TextView
             style="@style/Hint"
+            android:tag="help"
             android:text="@string/hint_listen" />
 
         <!-- Detection -->
@@ -213,6 +226,7 @@
 
             <TextView
                 style="@style/Hint"
+                android:tag="help"
                 android:text="@string/hint_detect" />
         </LinearLayout>
 
@@ -247,6 +261,7 @@
 
         <TextView
             style="@style/Hint"
+            android:tag="help"
             android:text="@string/hint_common" />
 
         <!-- High shelf -->
@@ -310,6 +325,7 @@
 
             <TextView
                 style="@style/Hint"
+                android:tag="help"
                 android:text="@string/apply_hint" />
 
             <Switch
@@ -342,6 +358,7 @@
         <TextView
             style="@style/Hint"
             android:layout_marginTop="16dp"
+            android:tag="help"
             android:text="@string/notes" />
     </LinearLayout>
 </ScrollView>

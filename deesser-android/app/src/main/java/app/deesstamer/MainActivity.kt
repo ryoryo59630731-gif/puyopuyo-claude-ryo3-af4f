@@ -51,6 +51,8 @@ class MainActivity : Activity() {
     private lateinit var applyGroup: RadioGroup
     private lateinit var bootSwitch: Switch
     private lateinit var sessions: TextView
+    private lateinit var helpSwitch: Switch
+    private lateinit var helpViews: List<View>
 
     /** Guards against feedback loops while the UI is being filled from state. */
     private var rendering = false
@@ -114,6 +116,8 @@ class MainActivity : Activity() {
         applyGroup = findViewById(R.id.applyGroup)
         bootSwitch = findViewById(R.id.bootSwitch)
         sessions = findViewById(R.id.sessions)
+        helpSwitch = findViewById(R.id.helpSwitch)
+        helpViews = viewsTagged(findViewById(R.id.root), HELP_TAG)
 
         band.labels = Focus.entries.associateWith { focusName(it) }
         curve.axisLabel = getString(R.string.curve_axis)
@@ -184,6 +188,11 @@ class MainActivity : Activity() {
         power.setOnCheckedChangeListener { _, on ->
             if (rendering) return@setOnCheckedChangeListener
             setPower(on)
+        }
+        helpSwitch.setOnCheckedChangeListener { _, on ->
+            if (rendering) return@setOnCheckedChangeListener
+            AppState.prefs.showHelp = on
+            render()
         }
         findViewById<Button>(R.id.presetButton).setOnClickListener { showPresets() }
 
@@ -282,6 +291,10 @@ class MainActivity : Activity() {
             power.isChecked = AppState.serviceRunning || AppState.prefs.powerOn
             power.isEnabled = supported
             warning.visibility = if (supported) View.GONE else View.VISIBLE
+
+            val showHelp = AppState.prefs.showHelp
+            helpSwitch.isChecked = showHelp
+            for (v in helpViews) v.visibility = if (showHelp) View.VISIBLE else View.GONE
 
             val sel = p.selected
             val fp = p.focus(sel)
@@ -398,7 +411,23 @@ class MainActivity : Activity() {
                 }
                 if (apps.isEmpty()) append('\n').append(getString(R.string.sessions_hint))
             }
+            val hz = OutputRate.mediaOutputHz()
+            if (hz > 0) append('\n').append(getString(R.string.status_output_rate, fmtKhz(hz)))
         }
+    }
+
+    private fun fmtKhz(hz: Int): String =
+        if (hz % 1000 == 0) (hz / 1000).toString() else "%.1f".format(hz / 1000f)
+
+    /** All views under [root] whose tag equals [tag]. */
+    private fun viewsTagged(root: View, tag: String): List<View> {
+        val out = ArrayList<View>()
+        fun walk(v: View) {
+            if (v.tag == tag) out += v
+            if (v is android.view.ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+        }
+        walk(root)
+        return out
     }
 
     // ---- knob helpers ----
@@ -467,5 +496,6 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_NOTIF = 10
         private const val REQ_AUDIO = 11
+        private const val HELP_TAG = "help"
     }
 }

@@ -5,6 +5,8 @@
 
     <string name="status_off">停止中</string>
     <string name="status_on">動作中</string>
+    <string name="help_switch">説明文を表示</string>
+    <string name="status_output_rate">出力のサンプリングレート: %1$s kHz（オートの解析に使用）</string>
     <string name="status_filter">Filter モニター中（選択中のターゲットの帯域のみ再生）</string>
     <string name="status_unsupported">この端末では利用できません</string>
     <string name="warning_unsupported">この端末には Android 標準の DynamicsProcessing エフェクトが見つかりませんでした。このアプリはそのエフェクトを使って処理するため、この端末では動作しません。</string>

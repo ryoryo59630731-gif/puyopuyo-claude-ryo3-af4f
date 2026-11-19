@@ -12,6 +12,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("power", false)
         set(v) = sp.edit().putBoolean("power", v).apply()
 
+    /** Whether the explanatory texts on the main screen are shown (screen-only setting). */
+    var showHelp: Boolean
+        get() = sp.getBoolean("showHelp", true)
+        set(v) = sp.edit().putBoolean("showHelp", v).apply()
+
     fun load(): DeEsserParams {
         val d = DeEsserParams()
         return DeEsserParams(
