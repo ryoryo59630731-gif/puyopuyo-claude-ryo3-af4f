@@ -73,6 +73,10 @@ public:
         std::atomic<float> learnedSeconds { 0.0f };            // auto level
         std::atomic<float> learnProgress { -1.0f };            // 0..1 while learning, -1 idle
         std::atomic<bool> profileValid { false };
+        // Per band and detector signal (L/R, Mid, Side), dB (mean square, a full-scale sine is -3 dB):
+        // the level of the latest frame, the usual level in use (reference: fixed / auto / learned)
+        // and the fixed estimate the reference starts from. For the reference-level view.
+        std::array<std::array<std::atomic<float>, kMaxBands>, kNumDet> levelDb {}, refDb {}, estimateDb {};
     };
     Meters meters;
 

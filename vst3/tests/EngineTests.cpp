@@ -571,6 +571,50 @@ void testSpectrumMeters()
     check (in - out > 6, "output spectrum shows the reduction");
 }
 
+void testReferenceMeters()
+{
+    const double sr = 48000;
+    const Layout layout (3, false);
+    int b7 = -1;
+    for (int b = 0; b < layout.numBands; ++b)
+        if (layout.low (b) <= 7000.0f && 7000.0f < layout.high (b))
+            b7 = b;
+    check (b7 >= 0, "band holding 7 kHz found");
+
+    // Before any audio (e.g. a DAW with no audio device) there is nothing to show.
+    Engine fresh;
+    fresh.prepare (sr, 2);
+    fresh.setSettings (Settings {});
+    check (std::isnan (fresh.meters.refDb[0][0].load()) && fresh.meters.levelDb[0][0].load() < -100.0f,
+           "no reference shown before any audio");
+
+    // Fixed estimate: the reference shown is the estimate, and the band level shows the tone.
+    Engine e;
+    e.prepare (sr, 2);
+    run (vocalOnly (50, 50, Reference::Fixed), sr, 1.0, bedPlusHigh (0.3), nullptr, false, nullptr, &e);
+    bool same = true, finite = true;
+    for (int b = 0; b < e.meters.numBands.load(); ++b)
+        for (int d = 0; d < kNumDet; ++d)
+        {
+            const float rf = e.meters.refDb[(size_t) d][(size_t) b].load(), est = e.meters.estimateDb[(size_t) d][(size_t) b].load();
+            same = same && std::abs (rf - est) < 1.0e-3f;
+            finite = finite && std::isfinite (rf) && std::isfinite (est) && std::isfinite (e.meters.levelDb[(size_t) d][(size_t) b].load());
+        }
+    check (same, "fixed: reference shown = estimate");
+    check (finite, "reference-view meters are finite");
+    const float lv = e.meters.levelDb[(size_t) Det::LR][(size_t) b7].load();
+    std::printf ("  7 kHz band: level %.1f dB, estimate %.1f dB\n", lv, e.meters.estimateDb[(size_t) Det::LR][(size_t) b7].load());
+    check (lv > -18.0f && lv < -9.0f, "band level shows the 0.3 sine (about -13.5 dB)");
+
+    // Auto: a steady loud band pulls its reference up from the estimate.
+    Engine e2;
+    e2.prepare (sr, 2);
+    run (vocalOnly (50, 50, Reference::Auto), sr, 6.0, bedPlusHigh (0.3), nullptr, false, nullptr, &e2);
+    const float moved = e2.meters.refDb[(size_t) Det::LR][(size_t) b7].load() - e2.meters.estimateDb[(size_t) Det::LR][(size_t) b7].load();
+    std::printf ("  auto: reference moved %+.1f dB from the estimate after 6 s\n", moved);
+    check (moved > 3.0f, "auto: reference rises toward a steady loud band");
+}
+
 void testAbSlots()
 {
     AbSlots ab;
@@ -646,6 +690,7 @@ int main()
         { "extended range + custom target", testExtendedRangeAndCustomTarget },
         { "learn, freeze, restore", testLearnFreezeAndRestore },
         { "spectrum meters", testSpectrumMeters },
+        { "reference-level meters", testReferenceMeters },
         { "A/B slots", testAbSlots },
         { "no allocation while processing", testNoAllocationWhileProcessing },
     };

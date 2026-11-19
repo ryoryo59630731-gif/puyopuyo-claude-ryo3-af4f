@@ -2,6 +2,8 @@
 
 #include "PluginEditor.h"
 
+#include <map>
+
 namespace
 {
 using namespace sasari;
@@ -185,16 +187,19 @@ void SasariProcessor::setCurrentProgram (int index)
     if (! juce::isPositiveAndBelow (index, getNumPrograms()))
         return;
     currentProgram = index;
+    {
+        const juce::ScopedLock sl (userPresetLock);
+        currentUserPreset.clear();
+        currentUserValues.clear();
+    }
     undoManager.beginNewTransaction();
     for (const auto& [paramId, value] : programValues (index))
         setParam (paramId, value);
 }
 
-bool SasariProcessor::programMatchesParameters (int index)
+bool SasariProcessor::valuesMatchParameters (const ValueList& values)
 {
-    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
-        return false;
-    for (const auto& [paramId, value] : programValues (index))
+    for (const auto& [paramId, value] : values)
     {
         if (paramId == sasari::params::selected || paramId == sasari::params::listen)
             continue; // which target is being edited and the monitor mode are not sound settings
@@ -203,6 +208,138 @@ bool SasariProcessor::programMatchesParameters (int index)
                 return false;
     }
     return true;
+}
+
+bool SasariProcessor::programMatchesParameters (int index)
+{
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
+        return false;
+    return valuesMatchParameters (programValues (index));
+}
+
+// ---- user presets ----
+
+juce::File SasariProcessor::defaultUserPresetFolder()
+{
+    return juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("SasariOsaeru")
+        .getChildFile ("Presets");
+}
+
+juce::String SasariProcessor::legalPresetName (const juce::String& name)
+{
+    return juce::File::createLegalFileName (name.trim()).substring (0, 60).trim();
+}
+
+juce::File SasariProcessor::userPresetFile (const juce::String& name) const
+{
+    return userPresetFolder.getChildFile (legalPresetName (name) + ".sasaripreset");
+}
+
+juce::StringArray SasariProcessor::getUserPresetNames() const
+{
+    juce::StringArray names;
+    for (const auto& f : userPresetFolder.findChildFiles (juce::File::findFiles, false, "*.sasaripreset"))
+        names.add (f.getFileNameWithoutExtension());
+    names.sortNatural();
+    return names;
+}
+
+bool SasariProcessor::userPresetExists (const juce::String& name) const
+{
+    return legalPresetName (name).isNotEmpty() && userPresetFile (name).existsAsFile();
+}
+
+SasariProcessor::ValueList SasariProcessor::captureSoundValues() const
+{
+    ValueList v;
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (rp->getParameterID() != sasari::params::listen)
+                v.emplace_back (rp->getParameterID(), rp->convertFrom0to1 (rp->getValue()));
+    return v;
+}
+
+bool SasariProcessor::saveUserPreset (const juce::String& name)
+{
+    const auto legal = legalPresetName (name);
+    if (legal.isEmpty() || ! userPresetFolder.createDirectory())
+        return false;
+    const auto values = captureSoundValues();
+    juce::XmlElement xml ("SasariOsaeruPreset");
+    xml.setAttribute ("version", 1);
+    for (const auto& [paramId, value] : values)
+    {
+        auto* e = xml.createNewChildElement ("Param");
+        e->setAttribute ("id", paramId);
+        e->setAttribute ("value", (double) value);
+    }
+    if (! xml.writeTo (userPresetFile (legal)))
+        return false;
+    const juce::ScopedLock sl (userPresetLock);
+    currentUserPreset = legal;
+    currentUserValues = values;
+    return true;
+}
+
+bool SasariProcessor::loadUserPreset (const juce::String& name)
+{
+    const auto xml = juce::parseXML (userPresetFile (name));
+    if (xml == nullptr || ! xml->hasTagName ("SasariOsaeruPreset"))
+        return false;
+    std::map<juce::String, float> stored;
+    for (auto* e : xml->getChildWithTagNameIterator ("Param"))
+        stored[e->getStringAttribute ("id")] = (float) e->getDoubleAttribute ("value");
+
+    // A setting the file does not have (saved by an older version) goes back to its default.
+    ValueList values;
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (rp->getParameterID() != sasari::params::listen)
+            {
+                const auto it = stored.find (rp->getParameterID());
+                values.emplace_back (rp->getParameterID(), it != stored.end() ? it->second : rp->convertFrom0to1 (rp->getDefaultValue()));
+            }
+    undoManager.beginNewTransaction();
+    for (const auto& [paramId, value] : values)
+        setParam (paramId, value);
+    const juce::ScopedLock sl (userPresetLock);
+    currentUserPreset = legalPresetName (name);
+    currentUserValues = captureSoundValues(); // the values as the parameters hold them (snapped to their ranges)
+    return true;
+}
+
+bool SasariProcessor::deleteUserPreset (const juce::String& name)
+{
+    const auto file = userPresetFile (name);
+    if (! file.existsAsFile() || ! file.deleteFile())
+        return false;
+    const juce::ScopedLock sl (userPresetLock);
+    if (currentUserPreset == legalPresetName (name))
+    {
+        currentUserPreset.clear();
+        currentUserValues.clear();
+    }
+    return true;
+}
+
+juce::String SasariProcessor::getCurrentUserPreset() const
+{
+    const juce::ScopedLock sl (userPresetLock);
+    return currentUserPreset;
+}
+
+bool SasariProcessor::currentPresetMatchesParameters()
+{
+    ValueList values;
+    {
+        const juce::ScopedLock sl (userPresetLock);
+        if (currentUserPreset.isEmpty())
+            values = programValues (currentProgram.load());
+        else
+            values = currentUserValues;
+    }
+    return valuesMatchParameters (values);
 }
 
 // ---- learn ----
@@ -247,6 +384,19 @@ void SasariProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty ("program", currentProgram.load(), nullptr);
     state.setProperty ("editorScale", editorScale, nullptr);
+    state.setProperty ("spectrumView", spectrumView, nullptr);
+    {
+        const juce::ScopedLock sl (userPresetLock);
+        if (currentUserPreset.isNotEmpty())
+        {
+            // The preset's values travel with the project, so "changed" still shows correctly after reopening.
+            juce::ValueTree user ("UserPreset");
+            user.setProperty ("name", currentUserPreset, nullptr);
+            for (const auto& [paramId, value] : currentUserValues)
+                user.setProperty (juce::Identifier (paramId), value, nullptr);
+            state.appendChild (user, nullptr);
+        }
+    }
 
     const auto profile = engine.getProfile();
     if (profile.valid)
@@ -281,6 +431,20 @@ void SasariProcessor::setStateInformation (const void* data, int sizeInBytes)
     auto tree = juce::ValueTree::fromXml (*xml);
     currentProgram = juce::jlimit (0, getNumPrograms() - 1, (int) tree.getProperty ("program", 0));
     editorScale = (float) (double) tree.getProperty ("editorScale", 1.0);
+    spectrumView = juce::jlimit (0, 1, (int) tree.getProperty ("spectrumView", 0));
+    {
+        const juce::ScopedLock sl (userPresetLock);
+        currentUserPreset.clear();
+        currentUserValues.clear();
+        if (auto user = tree.getChildWithName ("UserPreset"); user.isValid())
+        {
+            currentUserPreset = user.getProperty ("name").toString();
+            for (int i = 0; i < user.getNumProperties(); ++i)
+                if (const auto key = user.getPropertyName (i); key.toString() != "name")
+                    currentUserValues.emplace_back (key.toString(), (float) (double) user.getProperty (key));
+            tree.removeChild (user, nullptr);
+        }
+    }
 
     sasari::Engine::Profile profile;
     const auto text = tree.getProperty ("learnedProfile").toString();
@@ -318,6 +482,17 @@ void SasariProcessor::setStateInformation (const void* data, int sizeInBytes)
     }
 
     apvts.replaceState (tree);
+    // replaceState skips a parameter whose stored value equals the one it already has after rounding
+    // (an on/off parameter that the host left at e.g. 0.72 counts as "on"), so set every parameter to
+    // exactly the stored value (found by pluginval, strictness 10).
+    for (auto* p : getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*> (p))
+            if (const auto node = tree.getChildWithProperty ("id", rp->getParameterID()); node.hasProperty ("value"))
+            {
+                const float normalised = rp->convertTo0to1 ((float) (double) node.getProperty ("value"));
+                if (std::abs (rp->getValue() - normalised) > 1.0e-6f)
+                    rp->setValueNotifyingHost (normalised);
+            }
     undoManager.clearUndoHistory();
 }
 

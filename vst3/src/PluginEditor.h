@@ -57,17 +57,66 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attachment;
 };
 
-/** Input / output spectrum with band ownership, reduction, selected target and shelf. */
+/** Input / output spectrum with band ownership, reduction, selected target and shelf; or, switched
+    with the two buttons in its header, the reference-level view: per band the current level, the
+    usual level in use (reference) and the fixed estimate it started from. */
 class SpectrumDisplay : public juce::Component
 {
 public:
-    explicit SpectrumDisplay (SasariProcessor& p) : proc (p) { in.fill (-120.0f); out.fill (-120.0f); }
+    explicit SpectrumDisplay (SasariProcessor& p);
     void paint (juce::Graphics&) override;
+    void resized() override;
     void tick();
 
 private:
+    void paintSpectrum (juce::Graphics&);
+    void paintReference (juce::Graphics&);
+
     SasariProcessor& proc;
     std::array<float, sasari::Engine::kSpecPoints> in {}, out {};
+    std::array<float, sasari::kMaxBands> level {}; // displayed level of the reference view (fast rise, slow fall)
+    juce::TextButton viewButtons[2];
+};
+
+/** Preset menu that rebuilds its list (factory presets + the user's saved ones) each time it opens. */
+class PresetBox : public juce::ComboBox
+{
+public:
+    std::function<void()> beforePopup;
+    void showPopup() override
+    {
+        if (beforePopup)
+            beforePopup();
+        juce::ComboBox::showPopup();
+    }
+};
+
+/** Small dialog drawn inside the editor (no separate window): a preset name to save, or a yes / no question. */
+class PresetDialog : public juce::Component
+{
+public:
+    PresetDialog();
+    /** onSave returns false when the preset could not be written (the dialog then stays open). */
+    void askName (const juce::String& suggestion, std::function<bool (const juce::String&)> exists,
+                  std::function<bool (const juce::String&)> onSave);
+    void askConfirm (const juce::String& message, const juce::String& okText, std::function<void()> onOk);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override {} // clicks outside the panel do nothing
+
+    juce::TextEditor nameEditor;
+    juce::TextButton okButton, cancelButton;
+
+private:
+    void open();
+    void close();
+    void updateWarning();
+    juce::Rectangle<int> panelBounds() const;
+
+    juce::Label title, warning;
+    std::function<bool (const juce::String&)> nameExists, saveAction;
+    std::function<void()> confirmAction;
+    bool asksName = false;
 };
 
 /** Per-band "how far it sticks out" bars with each band's threshold. */
@@ -135,6 +184,9 @@ public:
 private:
     void timerCallback() override;
     void updatePresetBox();
+    void rebuildPresetMenu();
+    void openSaveDialog();
+    void openDeleteDialog();
     void attachSelectedTarget();
     void setChoice (const juce::String& id, int index);
     int choice (const juce::String& id) const;
@@ -145,7 +197,9 @@ private:
     sasari::ui::LookAndFeel lnf;
     sasari::ui::Body body;
 
-    juce::ComboBox presetBox;
+    sasari::ui::PresetBox presetBox;
+    sasari::ui::PresetDialog presetDialog;
+    juce::StringArray userPresetNames; // as listed in the open menu
     juce::TextButton abButtons[2], abCopy, undoButton, redoButton;
     juce::TextButton listenButtons[3];
     sasari::ui::CurveDisplay curve;
@@ -182,7 +236,8 @@ private:
         analysisAttachment;
 
     int attachedTarget = -1;
-    int shownProgram = -1;       // what the preset box currently shows (see updatePresetBox)
+    int shownProgram = -2;       // what the preset box currently shows (see updatePresetBox; -2 = refresh)
+    juce::String shownUser;
     bool shownModified = false;
     bool constructed = false;
 

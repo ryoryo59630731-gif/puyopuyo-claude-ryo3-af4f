@@ -40,6 +40,13 @@ Engine::Engine()
         v.store (-120.0f);
     for (auto& v : meters.specOut)
         v.store (-120.0f);
+    for (int d = 0; d < kNumDet; ++d)
+        for (int b = 0; b < kMaxBands; ++b)
+        {
+            meters.levelDb[(size_t) d][(size_t) b].store (-120.0f);
+            meters.refDb[(size_t) d][(size_t) b].store (kNaN); // NaN = no audio processed yet
+            meters.estimateDb[(size_t) d][(size_t) b].store (kNaN);
+        }
     for (auto& d : profileDb)
         for (auto& v : d)
             v.store (kNaN);
@@ -459,6 +466,9 @@ void Engine::processFrame (bool bypass)
                     rf = model[(size_t) d][(size_t) b];
                     break;
             }
+            meters.levelDb[(size_t) d][(size_t) b].store (silent ? -120.0f : lvl, std::memory_order_relaxed);
+            meters.refDb[(size_t) d][(size_t) b].store (rf, std::memory_order_relaxed);
+            meters.estimateDb[(size_t) d][(size_t) b].store (model[(size_t) d][(size_t) b], std::memory_order_relaxed);
         }
 
     // ---- detection and gain reduction, Mid and Side slots ----

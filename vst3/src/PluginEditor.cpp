@@ -7,6 +7,10 @@ namespace
 {
 juce::String jp (const char* utf8) { return juce::String::fromUTF8 (utf8); }
 
+// Preset menu item IDs: factory presets are 1..N (program index + 1).
+constexpr int kUserPresetId = 101, kMaxUserPresetsShown = 800, kNoUserPresetId = 950, kSavePresetId = 1001,
+              kDeletePresetId = 1002;
+
 const char* targetName (int f)
 {
     static const char* n[] = { "歪みギター", "さ行", "ハイハット", "カスタム" };
@@ -175,6 +179,42 @@ void Knob::paint (juce::Graphics& g)
 
 // ============================================================================ SpectrumDisplay
 
+namespace
+{
+/** Which detector signal the reference view shows: the one the selected target listens to. */
+int viewDetector (const Settings& s)
+{
+    const auto ch = s.focus[(size_t) juce::jlimit (0, kNumFocus - 1, s.selected)].channel;
+    return ch == ChannelMode::Mid ? (int) Det::M : (ch == ChannelMode::Side ? (int) Det::S : (int) Det::LR);
+}
+} // namespace
+
+SpectrumDisplay::SpectrumDisplay (SasariProcessor& p) : proc (p)
+{
+    in.fill (-120.0f);
+    out.fill (-120.0f);
+    level.fill (-120.0f);
+    const char* names[] = { "スペクトラム", "基準レベル" };
+    const char* tips[] = { "入力と出力の周波数ごとの大きさ、削った量", "帯域ごとの今のレベル・基準レベル（普段のレベル）・固定の推定値" };
+    for (int i = 0; i < 2; ++i)
+    {
+        viewButtons[i].setButtonText (jp (names[i]));
+        viewButtons[i].setTooltip (jp (tips[i]));
+        viewButtons[i].onClick = [this, i] {
+            proc.spectrumView = i;
+            repaint();
+        };
+        addAndMakeVisible (viewButtons[i]);
+    }
+}
+
+void SpectrumDisplay::resized()
+{
+    const int w = 96, x0 = getWidth() / 2 - w;
+    for (int i = 0; i < 2; ++i)
+        viewButtons[i].setBounds (x0 + i * w, 1, w - 2, 20);
+}
+
 void SpectrumDisplay::tick()
 {
     auto& m = proc.engine.meters;
@@ -185,10 +225,26 @@ void SpectrumDisplay::tick()
         in[(size_t) i] = a > in[(size_t) i] ? a : juce::jmax (a, in[(size_t) i] - 1.2f);
         out[(size_t) i] = b > out[(size_t) i] ? b : juce::jmax (b, out[(size_t) i] - 1.2f);
     }
+    const int d = viewDetector (proc.currentSettings());
+    for (int b = 0; b < kMaxBands; ++b)
+    {
+        const float v = m.levelDb[(size_t) d][(size_t) b].load();
+        level[(size_t) b] = v > level[(size_t) b] ? v : juce::jmax (v, level[(size_t) b] - 0.8f);
+    }
+    for (int i = 0; i < 2; ++i)
+        viewButtons[i].setToggleState (proc.spectrumView == i, juce::dontSendNotification);
     repaint();
 }
 
 void SpectrumDisplay::paint (juce::Graphics& g)
+{
+    if (proc.spectrumView == 1)
+        paintReference (g);
+    else
+        paintSpectrum (g);
+}
+
+void SpectrumDisplay::paintSpectrum (juce::Graphics& g)
 {
     const auto s = proc.currentSettings();
     const Layout layout (s.bandsPerOctave, s.extendedRange);
@@ -291,14 +347,15 @@ void SpectrumDisplay::paint (juce::Graphics& g)
     g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
     g.drawText (jp (targetName (sel)) + "  " + params::hzText (juce::jmin (sf.lowHz, sf.highHz), 0) + " - "
                     + params::hzText (juce::jmax (sf.lowHz, sf.highHz), 0),
-                juce::Rectangle<float> (area.getX() + 10, area.getY() + 3, 300, 16), juce::Justification::centredLeft);
+                juce::Rectangle<float> (area.getX() + 10, area.getY() + 3, 260, 16), juce::Justification::centredLeft);
 
     float maxGr = 0;
     for (int b = 0; b < proc.engine.meters.numBands.load(); ++b)
         maxGr = juce::jmax (maxGr, proc.engine.meters.grDb[(size_t) b].load());
-    g.setFont (juce::FontOptions (11.0f));
+    g.setFont (juce::FontOptions (10.0f));
     g.setColour (juce::Colour (0xFF8C96A6));
-    g.drawText (jp ("灰＝入力  白＝出力  赤＝削った量"), juce::Rectangle<float> (area.getCentreX() - 110, area.getY() + 3, 220, 16), juce::Justification::centred);
+    g.drawText (jp ("灰＝入力  白＝出力  赤＝削った量"), r.withTrimmedLeft (4).withHeight (14), juce::Justification::topLeft);
+    g.setFont (juce::FontOptions (11.0f));
     g.setColour (juce::Colour (Colours::red));
     g.drawText (jp ("最大リダクション ") + juce::String (-maxGr, 1) + " dB",
                 juce::Rectangle<float> (area.getRight() - 190, area.getY() + 3, 180, 16), juce::Justification::centredRight);
@@ -319,6 +376,158 @@ void SpectrumDisplay::paint (juce::Graphics& g)
         g.setColour (juce::Colour (0xFFE2E8F0));
         g.fillPath (dashed);
     }
+}
+
+void SpectrumDisplay::paintReference (juce::Graphics& g)
+{
+    const auto s = proc.currentSettings();
+    const Layout layout (s.bandsPerOctave, s.extendedRange);
+    const auto plan = makePlan (s, layout);
+    auto& m = proc.engine.meters;
+    const int d = viewDetector (s);
+    const int nb = juce::jmin (layout.numBands, m.numBands.load());
+
+    auto area = getLocalBounds().toFloat();
+    g.setColour (juce::Colour (Colours::display));
+    g.fillRoundedRectangle (area, 6.0f);
+    const auto r = juce::Rectangle<float>::leftTopRightBottom (area.getX() + 36, area.getY() + 24, area.getRight() - 10,
+                                                               area.getBottom() - 14);
+    auto x = [&] (float f) { return FreqAxis::x (f, r.getX(), r.getRight()); };
+    constexpr float topDb = 0.0f, bottomDb = -90.0f; // the top ~15 dB holds the legend and the summary
+    auto y = [&] (float db) { return r.getY() + juce::jlimit (0.0f, 1.0f, (topDb - db) / (topDb - bottomDb)) * r.getHeight(); };
+    auto signedDb = [] (float v) { return (v >= 0.0f ? "+" : "") + juce::String (v, 1); };
+
+    g.setColour (juce::Colour (0x66000000));
+    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (r.getX(), r.getY(), x (layout.lowLimit()), r.getBottom()));
+    g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.highLimit()), r.getY(), r.getRight(), r.getBottom()));
+    const auto& owners = d == (int) Det::S ? plan.side : plan.mid;
+    for (int b = 0; b < nb; ++b)
+        if (const int o = owners[(size_t) b].owner; o >= 0)
+        {
+            g.setColour (Colours::focus (o).withAlpha (0.10f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.low (b)) + 0.5f, r.getY(), x (layout.high (b)) - 0.5f, r.getBottom()));
+        }
+    drawFreqGrid (g, r, true);
+    g.setFont (juce::FontOptions (10.0f));
+    for (float db = -20.0f; db >= -80.0f; db -= 10.0f)
+    {
+        g.setColour (juce::Colour (Colours::stroke).withAlpha (0.6f));
+        g.drawHorizontalLine ((int) y (db), r.getX(), r.getRight());
+        g.setColour (juce::Colour (Colours::dim));
+        g.drawText (juce::String ((int) db), juce::Rectangle<float> (area.getX() + 2, y (db) - 7, r.getX() - area.getX() - 5, 14),
+                    juce::Justification::centredRight);
+    }
+
+    // Nothing to show until the host has sent audio through the plugin.
+    const bool hasData = nb > 0 && std::isfinite (m.refDb[(size_t) d][0].load()) && std::isfinite (m.estimateDb[(size_t) d][0].load());
+    if (! hasData)
+    {
+        g.setColour (juce::Colour (Colours::dim));
+        g.setFont (juce::FontOptions (13.0f));
+        g.drawText (jp ("まだ音が届いていません。再生すると、帯域ごとの今のレベルと基準レベルが表示されます"), r,
+                    juce::Justification::centred);
+    }
+
+    // Per band: current level (bar, red while being cut), fixed estimate (dashed), reference in use (yellow).
+    juce::Path refPath, estPath;
+    for (int b = 0; hasData && b < nb; ++b)
+    {
+        const float l0 = x (layout.low (b)) + 1.0f, r0 = x (layout.high (b)) - 1.0f;
+        const float lv = level[(size_t) b];
+        const float rf = m.refDb[(size_t) d][(size_t) b].load(), est = m.estimateDb[(size_t) d][(size_t) b].load();
+        if (lv > bottomDb)
+        {
+            const bool cutting = m.grDb[(size_t) b].load() > 0.2f;
+            g.setColour (cutting ? juce::Colour (Colours::red).withAlpha (0.6f) : juce::Colour (0xFF8C96A6).withAlpha (0.45f));
+            g.fillRect (juce::Rectangle<float>::leftTopRightBottom (l0, y (lv), r0, r.getBottom()));
+        }
+        if (b == 0)
+        {
+            refPath.startNewSubPath (l0, y (rf));
+            estPath.startNewSubPath (l0, y (est));
+        }
+        else
+        {
+            refPath.lineTo (l0, y (rf));
+            estPath.lineTo (l0, y (est));
+        }
+        refPath.lineTo (r0, y (rf));
+        estPath.lineTo (r0, y (est));
+    }
+    juce::Path dashed;
+    const float dashes[] = { 4.0f, 4.0f };
+    juce::PathStrokeType (1.5f).createDashedStroke (dashed, estPath, dashes, 2);
+    g.setColour (juce::Colour (0xFFB8C0CC).withAlpha (0.9f));
+    g.fillPath (dashed);
+    g.setColour (juce::Colour (Colours::warn));
+    g.strokePath (refPath, juce::PathStrokeType (2.5f));
+
+    // Selected target outline.
+    std::array<int, kMaxBands> idx {};
+    const int sel = s.selected;
+    const auto& sf = s.focus[(size_t) sel];
+    const int n = coveredBands (sf, layout, idx);
+    if (! outsideLayout (sf, layout))
+    {
+        g.setColour (Colours::focus (sel));
+        g.drawRect (juce::Rectangle<float>::leftTopRightBottom (x (layout.low (idx[0])), r.getY(), x (layout.high (idx[(size_t) n - 1])), r.getBottom()), 1.5f);
+    }
+
+    // Header: which reference is in use, and which signal is shown.
+    const char* modeNames[] = { "固定の推定値", "オート（曲に追従）", "学習して固定" };
+    juce::String mode = jp ("基準レベル：") + jp (modeNames[juce::jlimit (0, 2, (int) s.reference)]);
+    if (s.reference == Reference::Learned)
+        mode << (m.profileValid.load() ? jp ("（学習済み）") : jp ("（未学習）"));
+    g.setColour (juce::Colour (Colours::warn));
+    g.setFont (juce::FontOptions (12.0f, juce::Font::bold));
+    g.drawText (mode, juce::Rectangle<float> (area.getX() + 10, area.getY() + 3, 270, 16), juce::Justification::centredLeft);
+    const char* detNames[] = { "表示：L/R の大きい方", "表示：Mid（中央）", "表示：Side（左右の広がり）" };
+    g.setColour (juce::Colour (Colours::dim));
+    g.setFont (juce::FontOptions (11.0f));
+    g.drawText (jp (detNames[d]), juce::Rectangle<float> (area.getRight() - 200, area.getY() + 3, 190, 16), juce::Justification::centredRight);
+
+    // Legend and the summary for the selected target: how far the reference moved from the estimate,
+    // and how far the sound is above its reference right now.
+    g.setFont (juce::FontOptions (10.0f));
+    g.drawText (jp ("棒＝今のレベル（赤＝削っている）  黄線＝基準レベル  点線＝固定の推定値"), r.withTrimmedLeft (4).withHeight (13),
+                juce::Justification::topLeft);
+    float sumMove = 0.0f, minMove = 1.0e9f, maxMove = -1.0e9f, sumOver = 0.0f;
+    int cnt = 0, cntOver = 0;
+    for (int i = 0; hasData && i < n; ++i)
+    {
+        const int b = idx[(size_t) i];
+        if (b >= nb)
+            continue;
+        const float rf = m.refDb[(size_t) d][(size_t) b].load();
+        const float mv = rf - m.estimateDb[(size_t) d][(size_t) b].load();
+        sumMove += mv;
+        minMove = juce::jmin (minMove, mv);
+        maxMove = juce::jmax (maxMove, mv);
+        ++cnt;
+        if (level[(size_t) b] > -100.0f)
+        {
+            sumOver += level[(size_t) b] - rf;
+            ++cntOver;
+        }
+    }
+    juce::String summary = jp ("「") + jp (targetName (sel)) + jp ("」の帯域：");
+    if (! hasData)
+        summary << jp ("再生すると表示されます");
+    else if (cnt == 0 || outsideLayout (sf, layout))
+        summary << jp ("解析範囲の外です");
+    else
+    {
+        if (s.reference == Reference::Fixed)
+            summary << jp ("基準＝固定の推定値（黄線と点線は同じ）");
+        else
+            summary << jp ("基準は推定値より 平均 ") << signedDb (sumMove / (float) cnt) << " dB  (" << signedDb (minMove) << jp (" 〜 ")
+                    << signedDb (maxMove) << ")";
+        if (cntOver > 0)
+            summary << jp ("   今のレベルは基準より 平均 ") << signedDb (sumOver / (float) cntOver) << " dB";
+    }
+    g.setColour (juce::Colour (Colours::text));
+    g.setFont (juce::FontOptions (11.0f, juce::Font::bold));
+    g.drawText (summary, r.withTrimmedLeft (4).withTrimmedTop (13).withHeight (15), juce::Justification::topLeft);
 }
 
 // ============================================================================ ProminenceDisplay
@@ -467,6 +676,132 @@ void CurveDisplay::paint (juce::Graphics& g)
                 juce::Rectangle<float> (left, top + 2, right - left - 4, 16), juce::Justification::centredRight);
 }
 
+// ============================================================================ PresetDialog
+
+PresetDialog::PresetDialog()
+{
+    setInterceptsMouseClicks (true, true);
+    title.setFont (juce::FontOptions (14.0f, juce::Font::bold));
+    title.setColour (juce::Label::textColourId, juce::Colour (Colours::text));
+    warning.setFont (juce::FontOptions (12.0f));
+    warning.setColour (juce::Label::textColourId, juce::Colour (Colours::warn));
+    warning.setJustificationType (juce::Justification::topLeft);
+    nameEditor.setFont (juce::FontOptions (15.0f));
+    nameEditor.setColour (juce::TextEditor::backgroundColourId, juce::Colour (Colours::display));
+    nameEditor.setColour (juce::TextEditor::textColourId, juce::Colour (Colours::text));
+    nameEditor.setColour (juce::TextEditor::outlineColourId, juce::Colour (Colours::stroke));
+    nameEditor.setColour (juce::TextEditor::focusedOutlineColourId, juce::Colour (Colours::accent));
+    nameEditor.setInputRestrictions (60);
+    nameEditor.onTextChange = [this] { updateWarning(); };
+    nameEditor.onReturnKey = [this] { okButton.triggerClick(); };
+    nameEditor.onEscapeKey = [this] { close(); };
+    cancelButton.setButtonText (jp ("キャンセル"));
+    cancelButton.onClick = [this] { close(); };
+    okButton.onClick = [this] {
+        if (asksName)
+        {
+            const auto name = SasariProcessor::legalPresetName (nameEditor.getText());
+            if (name.isEmpty())
+            {
+                warning.setText (jp ("名前を入れてください"), juce::dontSendNotification);
+                return;
+            }
+            if (saveAction && ! saveAction (name))
+            {
+                warning.setText (jp ("保存できませんでした（保存先：%APPDATA%\\SasariOsaeru\\Presets）"), juce::dontSendNotification);
+                return;
+            }
+        }
+        else if (confirmAction)
+            confirmAction();
+        close();
+    };
+    for (auto* c : std::initializer_list<juce::Component*> { &title, &warning, &nameEditor, &okButton, &cancelButton })
+        addAndMakeVisible (*c);
+}
+
+void PresetDialog::askName (const juce::String& suggestion, std::function<bool (const juce::String&)> exists,
+                            std::function<bool (const juce::String&)> onSave)
+{
+    asksName = true;
+    nameExists = std::move (exists);
+    saveAction = std::move (onSave);
+    confirmAction = nullptr;
+    title.setText (jp ("今の設定をプリセットとして保存"), juce::dontSendNotification);
+    okButton.setButtonText (jp ("保存"));
+    nameEditor.setVisible (true);
+    nameEditor.setText (suggestion, juce::dontSendNotification);
+    nameEditor.selectAll();
+    updateWarning();
+    open();
+    nameEditor.grabKeyboardFocus();
+}
+
+void PresetDialog::askConfirm (const juce::String& message, const juce::String& okText, std::function<void()> onOk)
+{
+    asksName = false;
+    confirmAction = std::move (onOk);
+    title.setText (message, juce::dontSendNotification);
+    okButton.setButtonText (okText);
+    nameEditor.setVisible (false);
+    warning.setText (jp ("この操作は元に戻せません"), juce::dontSendNotification);
+    open();
+}
+
+void PresetDialog::updateWarning()
+{
+    if (! asksName)
+        return;
+    const auto name = SasariProcessor::legalPresetName (nameEditor.getText());
+    juce::String text;
+    if (name.isNotEmpty() && name != nameEditor.getText().trim())
+        text << jp ("保存名：") << name << jp ("（ファイル名に使えない文字を除きました）  ");
+    if (name.isNotEmpty() && nameExists && nameExists (name))
+        text << jp ("同じ名前のプリセットがあります。保存すると上書きします");
+    warning.setText (text, juce::dontSendNotification);
+}
+
+void PresetDialog::open()
+{
+    setVisible (true);
+    toFront (false);
+    resized();
+}
+
+void PresetDialog::close()
+{
+    setVisible (false);
+    saveAction = nullptr;
+    confirmAction = nullptr;
+}
+
+juce::Rectangle<int> PresetDialog::panelBounds() const { return getLocalBounds().withSizeKeepingCentre (440, 176); }
+
+void PresetDialog::paint (juce::Graphics& g)
+{
+    g.fillAll (juce::Colour (0xAA05070A));
+    const auto p = panelBounds().toFloat();
+    g.setColour (juce::Colour (Colours::panel));
+    g.fillRoundedRectangle (p, 10.0f);
+    g.setColour (juce::Colour (Colours::accent).withAlpha (0.6f));
+    g.drawRoundedRectangle (p, 10.0f, 1.5f);
+}
+
+void PresetDialog::resized()
+{
+    auto p = panelBounds().reduced (18, 14);
+    title.setBounds (p.removeFromTop (24));
+    p.removeFromTop (6);
+    if (asksName)
+        nameEditor.setBounds (p.removeFromTop (32));
+    p.removeFromTop (6);
+    auto buttons = p.removeFromBottom (30);
+    cancelButton.setBounds (buttons.removeFromRight (110));
+    buttons.removeFromRight (8);
+    okButton.setBounds (buttons.removeFromRight (110));
+    warning.setBounds (p);
+}
+
 // ============================================================================ Editor
 
 SasariEditor::SasariEditor (SasariProcessor& p)
@@ -478,15 +813,24 @@ SasariEditor::SasariEditor (SasariProcessor& p)
     body.painter = [this] (juce::Graphics& g) { paintBody (g); };
     body.addMouseListener (this, true); // one undo transaction per mouse gesture
 
-    for (int i = 0; i < proc.getNumPrograms(); ++i)
-        presetBox.addItem (proc.getProgramName (i), i + 1);
     presetBox.setTextWhenNothingSelected (jp ("プリセット"));
+    presetBox.setTooltip (jp ("標準プリセットと自作プリセット。「今の設定を保存…」で名前を付けて保存できます"));
+    presetBox.beforePopup = [this] { rebuildPresetMenu(); };
     presetBox.onChange = [this] {
-        if (presetBox.getSelectedId() > 0)
-            proc.setCurrentProgram (presetBox.getSelectedId() - 1);
+        const int id = presetBox.getSelectedId();
+        if (id >= 1 && id <= proc.getNumPrograms())
+            proc.setCurrentProgram (id - 1);
+        else if (id >= kUserPresetId && id < kUserPresetId + userPresetNames.size())
+            proc.loadUserPreset (userPresetNames[id - kUserPresetId]);
+        else if (id == kSavePresetId)
+            openSaveDialog();
+        else if (id == kDeletePresetId)
+            openDeleteDialog();
+        shownProgram = -2; // show the current preset again (also after the two actions above)
+        updatePresetBox();
     };
     body.addAndMakeVisible (presetBox);
-    updatePresetBox(); // show the preset restored with the project / chosen in the host
+    rebuildPresetMenu(); // shows the preset restored with the project / chosen in the host
 
     for (int i = 0; i < 2; ++i)
     {
@@ -592,6 +936,7 @@ SasariEditor::SasariEditor (SasariProcessor& p)
     learnStatus.setFont (juce::FontOptions (11.0f));
     learnStatus.setColour (juce::Label::textColourId, juce::Colour (Colours::dim));
     body.addAndMakeVisible (learnStatus);
+    body.addChildComponent (presetDialog); // last, so it is drawn over everything when shown
 
     attachSelectedTarget();
     layoutBody();
@@ -652,20 +997,71 @@ void SasariEditor::attachSelectedTarget()
     targetHint.setText (jp (targetHintText (f)), juce::dontSendNotification);
 }
 
-// Shows the current preset; once a sound setting differs from it (knob, undo, A/B, automation) the
-// box says so and has no selection, so picking the same preset again re-applies it.
+// Shows the current preset (factory or user); once a sound setting differs from it (knob, undo, A/B,
+// automation) the box says so and has no selection, so picking the same preset again re-applies it.
 void SasariEditor::updatePresetBox()
 {
-    const int program = proc.getCurrentProgram();
-    const bool modified = ! proc.programMatchesParameters (program);
-    if (program == shownProgram && modified == shownModified)
+    const auto user = proc.getCurrentUserPreset();
+    const int program = user.isEmpty() ? proc.getCurrentProgram() : -1;
+    const bool modified = ! proc.currentPresetMatchesParameters();
+    if (program == shownProgram && user == shownUser && modified == shownModified)
         return;
     shownProgram = program;
+    shownUser = user;
     shownModified = modified;
+    const auto name = user.isEmpty() ? proc.getProgramName (program) : user;
     if (modified)
-        presetBox.setText (jp ("変更あり：") + proc.getProgramName (program), juce::dontSendNotification);
-    else
+        presetBox.setText (jp ("変更あり：") + name, juce::dontSendNotification);
+    else if (user.isEmpty())
         presetBox.setSelectedId (program + 1, juce::dontSendNotification);
+    else
+        presetBox.setText (name, juce::dontSendNotification); // selects the item when the menu lists it
+}
+
+void SasariEditor::rebuildPresetMenu()
+{
+    presetBox.clear (juce::dontSendNotification);
+    presetBox.addSectionHeading (jp ("標準プリセット"));
+    for (int i = 0; i < proc.getNumPrograms(); ++i)
+        presetBox.addItem (proc.getProgramName (i), i + 1);
+    presetBox.addSectionHeading (jp ("自作プリセット"));
+    userPresetNames = proc.getUserPresetNames();
+    userPresetNames.removeRange (kMaxUserPresetsShown, userPresetNames.size());
+    for (int i = 0; i < userPresetNames.size(); ++i)
+        presetBox.addItem (userPresetNames[i], kUserPresetId + i);
+    if (userPresetNames.isEmpty())
+        presetBox.addItem (jp ("（まだありません）"), kNoUserPresetId);
+    presetBox.setItemEnabled (kNoUserPresetId, false);
+    presetBox.addSeparator();
+    presetBox.addItem (jp ("今の設定を保存…"), kSavePresetId);
+    if (const auto current = proc.getCurrentUserPreset(); current.isNotEmpty() && proc.userPresetExists (current))
+        presetBox.addItem (jp ("「") + current + jp ("」を削除…"), kDeletePresetId);
+    shownProgram = -2;
+    updatePresetBox();
+}
+
+void SasariEditor::openSaveDialog()
+{
+    presetDialog.askName (proc.getCurrentUserPreset(),
+                          [this] (const juce::String& name) { return proc.userPresetExists (name); },
+                          [this] (const juce::String& name) {
+                              const bool ok = proc.saveUserPreset (name);
+                              shownProgram = -2;
+                              updatePresetBox();
+                              return ok;
+                          });
+}
+
+void SasariEditor::openDeleteDialog()
+{
+    const auto name = proc.getCurrentUserPreset();
+    if (name.isEmpty())
+        return;
+    presetDialog.askConfirm (jp ("自作プリセット「") + name + jp ("」を削除しますか？"), jp ("削除"), [this, name] {
+        proc.deleteUserPreset (name);
+        shownProgram = -2;
+        updatePresetBox();
+    });
 }
 
 void SasariEditor::timerCallback()
@@ -796,6 +1192,7 @@ void SasariEditor::layoutBody()
     analysisBox.setBounds (cx, 652, cw - 6, 24);
     learnButton.setBounds (cx + cw, 650, 120, 28);
     learnStatus.setBounds (cx, 684, 2 * cw, 28);
+    presetDialog.setBounds (0, 0, designWidth, designHeight);
 }
 
 void SasariEditor::resized()

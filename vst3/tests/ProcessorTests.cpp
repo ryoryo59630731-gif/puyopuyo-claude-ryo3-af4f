@@ -63,14 +63,14 @@ struct Music
     }
 };
 
-/** The editor's preset box: the only combo box that lists every preset. */
-juce::ComboBox* findPresetBox (juce::Component& root, int numPrograms)
+/** The editor's preset box: the combo box whose first item is the first factory preset. */
+juce::ComboBox* findPresetBox (juce::Component& root, const juce::String& firstPreset)
 {
     for (auto* c : root.getChildren())
     {
-        if (auto* box = dynamic_cast<juce::ComboBox*> (c); box != nullptr && box->getNumItems() == numPrograms)
+        if (auto* box = dynamic_cast<juce::ComboBox*> (c); box != nullptr && box->getNumItems() > 0 && box->getItemText (0) == firstPreset)
             return box;
-        if (auto* found = findPresetBox (*c, numPrograms))
+        if (auto* found = findPresetBox (*c, firstPreset))
             return found;
     }
     return nullptr;
@@ -164,6 +164,17 @@ int main (int argc, char** argv)
         q.switchToSlot (1);
         check (std::abs (value (q, mix) - 30.0f) < 0.01f, "A/B slots restored with the project");
     }
+    {
+        // A host may leave an on/off parameter between 0 and 1 (still "on"); loading a state must still set it exactly.
+        SasariProcessor q;
+        auto* on = q.apvts.getParameter (id (1, "on"));
+        on->setValueNotifyingHost (1.0f);
+        juce::MemoryBlock st;
+        q.getStateInformation (st);
+        on->setValueNotifyingHost (0.72f);
+        q.setStateInformation (st.getData(), (int) st.getSize());
+        check (std::abs (on->getValue() - 1.0f) < 1.0e-6f, "an on/off parameter is restored exactly: " + juce::String (on->getValue()));
+    }
 
     // ---- presets ----
     std::printf ("[presets]\n");
@@ -204,6 +215,41 @@ int main (int argc, char** argv)
     p.setCurrentProgram (0);
     set (p, analysis, 0.0f);
     set (p, reference, (float) sasari::Reference::Auto);
+
+    // ---- user presets (files in a test folder) ----
+    std::printf ("[user presets]\n");
+    const auto presetFolder = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("SasariOsaeruTestPresets");
+    presetFolder.deleteRecursively();
+    p.setUserPresetFolder (presetFolder);
+    const auto userName = juce::String::fromUTF8 ("ボーカル用/強め"); // '/' cannot be in a file name
+    const auto stored = SasariProcessor::legalPresetName (userName);
+    {
+        p.setCurrentProgram (1); // female vocal: guitar target off
+        set (p, range, 18.0f);
+        set (p, mix, 80.0f);
+        check (p.saveUserPreset (userName), "user preset saved");
+        check (p.getUserPresetNames().contains (stored) && p.getCurrentUserPreset() == stored && ! stored.containsChar ('/'),
+               "listed under a file-safe name: " + stored);
+        check (p.currentPresetMatchesParameters(), "the saved preset is current and unchanged");
+        p.setCurrentProgram (0);
+        check (p.getCurrentUserPreset().isEmpty() && std::abs (value (p, range) - 12.0f) < 0.01f, "a factory preset replaces it");
+        check (p.loadUserPreset (stored) && std::abs (value (p, range) - 18.0f) < 0.01f && std::abs (value (p, mix) - 80.0f) < 0.01f
+                   && value (p, id (0, "on")) < 0.5f,
+               "loading brings back every setting");
+        set (p, mix, 50.0f);
+        check (! p.currentPresetMatchesParameters(), "a change after loading is noticed");
+        set (p, mix, 80.0f);
+        juce::MemoryBlock st;
+        p.getStateInformation (st);
+        SasariProcessor q;
+        q.setStateInformation (st.getData(), (int) st.getSize());
+        check (q.getCurrentUserPreset() == stored && q.currentPresetMatchesParameters(), "the user preset in use is restored with the project");
+        check (p.saveUserPreset ("Second") && p.getUserPresetNames().size() == 2, "a second preset is listed");
+        check (p.deleteUserPreset ("Second") && ! p.userPresetExists ("Second") && p.getCurrentUserPreset().isEmpty(),
+               "deleting removes the file and the selection");
+        check (! p.loadUserPreset ("does not exist") && ! p.saveUserPreset ("   "), "a missing preset or an empty name is refused");
+        p.setCurrentProgram (0);
+    }
 
     // ---- editor ----
     std::printf ("[editor]\n");
@@ -260,7 +306,7 @@ int main (int argc, char** argv)
 
     // ---- preset box ----
     std::printf ("[preset box]\n");
-    if (auto* box = editor != nullptr ? findPresetBox (*editor, p.getNumPrograms()) : nullptr)
+    if (auto* box = editor != nullptr ? findPresetBox (*editor, p.getProgramName (0)) : nullptr)
     {
         check (box->getSelectedId() == 7 && box->getText() == p.getProgramName (6),
                "reopened editor shows the current preset: " + box->getText());
@@ -272,9 +318,38 @@ int main (int argc, char** argv)
         check (std::abs (value (p, range) - 12.0f) < 0.01f, "picking the same preset again re-applies it");
         juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
         check (box->getSelectedId() == 7 && box->getText() == p.getProgramName (6), "preset shown plainly again");
+        p.loadUserPreset (stored);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        check (box->getText() == stored, "the box shows the user preset in use");
+        set (p, mix, 40.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        check (box->getText().contains (stored) && box->getText() != stored, "a changed user preset is marked");
     }
     else
         check (false, "preset box found in the editor");
+
+    // ---- reference-level view ----
+    std::printf ("[reference view]\n");
+    p.setCurrentProgram (0);
+    p.spectrumView = 1;
+    juce::MessageManager::getInstance()->runDispatchLoopUntil (1500); // painted while audio runs
+    if (snapDir != juce::File())
+    {
+        auto img = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
+        juce::FileOutputStream os (snapDir.getChildFile ("editor_reference.png"));
+        os.setPosition (0);
+        os.truncate();
+        juce::PNGImageFormat().writeImageToStream (img, os);
+    }
+    {
+        juce::MemoryBlock st;
+        p.getStateInformation (st);
+        SasariProcessor q;
+        q.setStateInformation (st.getData(), (int) st.getSize());
+        check (q.spectrumView == 1, "the chosen view is saved with the project");
+    }
+    p.spectrumView = 0;
+    presetFolder.deleteRecursively();
     feeder.stopTimer();
     p.editorBeingDeleted (editor.get());
     editor = nullptr;
