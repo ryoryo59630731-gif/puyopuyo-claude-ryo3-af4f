@@ -66,6 +66,24 @@
     <string name="boot_switch">端末の起動時に自動で開始</string>
 
     <string name="presets">プリセット</string>
+    <string name="preset_user_item">★ %1$s</string>
+    <string name="preset_save">＋ 今の設定をプリセットとして保存…</string>
+    <string name="preset_manage">保存したプリセットの名前変更・上書き・削除…</string>
+    <string name="preset_save_title">プリセット名</string>
+    <string name="preset_name_hint">名前を入力</string>
+    <string name="preset_name_empty">名前を入力してください</string>
+    <string name="preset_default_name">マイプリセット</string>
+    <string name="preset_saved">「%1$s」を保存しました</string>
+    <string name="preset_applied">「%1$s」を読み込みました</string>
+    <string name="preset_overwrite_confirm">「%1$s」はすでにあります。今の設定で上書きしますか？</string>
+    <string name="preset_manage_title">保存したプリセット</string>
+    <string name="preset_rename">名前を変更</string>
+    <string name="preset_overwrite">今の設定で上書き</string>
+    <string name="preset_delete">削除</string>
+    <string name="preset_delete_confirm">「%1$s」を削除しますか？（元に戻せません）</string>
+    <string name="preset_name_taken">「%1$s」という名前はすでに使われています</string>
+    <string name="preset_renamed">名前を「%1$s」に変更しました</string>
+    <string name="preset_deleted">「%1$s」を削除しました</string>
     <string name="preset_default">標準（3ターゲットすべて）</string>
     <string name="preset_female_vocal">女性ボーカルのさ行を重点的に</string>
     <string name="preset_hihat">ハイハット・シンバルを重点的に</string>

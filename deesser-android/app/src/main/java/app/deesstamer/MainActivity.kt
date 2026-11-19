@@ -7,9 +7,13 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.audiofx.AudioEffect
 import android.os.Bundle
+import android.text.InputFilter
 import android.view.View
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
@@ -276,13 +280,140 @@ class MainActivity : Activity() {
         render()
     }
 
+    // ---- presets: built-in ones, then the user's own (★), then save / manage ----
+
     private fun showPresets() {
-        val names = Presets.all.map { getString(it.nameRes) }.toTypedArray()
+        val user = AppState.prefs.loadUserPresets()
+        val entries = ArrayList<Pair<String, () -> Unit>>()
+        for (p in Presets.all) entries += getString(p.nameRes) to { AppState.update(p.apply) }
+        for (u in user) {
+            entries += getString(R.string.preset_user_item, u.name) to {
+                AppState.update { PresetCodec.applyTo(u, it) }
+                toast(getString(R.string.preset_applied, u.name))
+            }
+        }
+        entries += getString(R.string.preset_save) to { saveCurrentAsPreset() }
+        if (user.isNotEmpty()) entries += getString(R.string.preset_manage) to { showManagePresets() }
         AlertDialog.Builder(this)
             .setTitle(R.string.presets)
-            .setItems(names) { _, which -> AppState.update(Presets.all[which].apply) }
+            .setItems(entries.map { it.first }.toTypedArray()) { _, which -> entries[which].second() }
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
+
+    private fun saveCurrentAsPreset() {
+        val list = AppState.prefs.loadUserPresets()
+        val suggestion = PresetCodec.suggestName(getString(R.string.preset_default_name), list.map { it.name })
+        askName(getString(R.string.preset_save_title), suggestion) { name ->
+            if (list.any { it.name == name }) {
+                confirm(getString(R.string.preset_overwrite_confirm, name)) { storePreset(name) }
+            } else {
+                storePreset(name)
+            }
+        }
+    }
+
+    /** Saves the current sound under [name], replacing a preset of that name in place. */
+    private fun storePreset(name: String) {
+        val list = AppState.prefs.loadUserPresets().toMutableList()
+        val preset = UserPreset(name, AppState.params)
+        val i = list.indexOfFirst { it.name == name }
+        if (i >= 0) list[i] = preset else list += preset
+        AppState.prefs.saveUserPresets(list)
+        toast(getString(R.string.preset_saved, name))
+    }
+
+    private fun showManagePresets() {
+        val list = AppState.prefs.loadUserPresets()
+        if (list.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(R.string.preset_manage_title)
+            .setItems(list.map { it.name }.toTypedArray()) { _, i -> showPresetActions(list[i].name) }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showPresetActions(name: String) {
+        val actions = arrayOf(
+            getString(R.string.preset_rename),
+            getString(R.string.preset_overwrite),
+            getString(R.string.preset_delete),
+        )
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(actions) { _, which ->
+                when (which) {
+                    0 -> renamePreset(name)
+                    1 -> confirm(getString(R.string.preset_overwrite_confirm, name)) { storePreset(name) }
+                    2 -> confirm(getString(R.string.preset_delete_confirm, name)) {
+                        AppState.prefs.saveUserPresets(AppState.prefs.loadUserPresets().filter { it.name != name })
+                        toast(getString(R.string.preset_deleted, name))
+                    }
+                }
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun renamePreset(old: String) {
+        askName(getString(R.string.preset_rename), old) { name ->
+            val list = AppState.prefs.loadUserPresets()
+            when {
+                name == old -> Unit
+                list.any { it.name == name } -> toast(getString(R.string.preset_name_taken, name))
+                else -> {
+                    AppState.prefs.saveUserPresets(list.map { if (it.name == old) it.copy(name = name) else it })
+                    toast(getString(R.string.preset_renamed, name))
+                }
+            }
+        }
+    }
+
+    /** One-line name dialog; OK only closes it when the cleaned name is not empty. */
+    private fun askName(title: String, initial: String, onOk: (String) -> Unit) {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            filters = arrayOf(InputFilter.LengthFilter(PresetCodec.MAX_NAME_LENGTH))
+            hint = getString(R.string.preset_name_hint)
+            setText(initial)
+            selectAll()
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = FrameLayout(this).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(title)
+            .setView(box)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNegativeButton(android.R.string.cancel, null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val name = PresetCodec.cleanName(input.text.toString())
+                if (name.isEmpty()) {
+                    input.error = getString(R.string.preset_name_empty)
+                } else {
+                    dialog.dismiss()
+                    onOk(name)
+                }
+            }
+            input.requestFocus()
+        }
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        dialog.show()
+    }
+
+    private fun confirm(message: String, onYes: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setMessage(message)
+            .setPositiveButton(android.R.string.ok) { _, _ -> onYes() }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun toast(text: String) = Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
 
     private fun render() {
         rendering = true

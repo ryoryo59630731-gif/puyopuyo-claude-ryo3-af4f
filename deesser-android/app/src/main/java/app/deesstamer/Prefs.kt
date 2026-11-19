@@ -17,6 +17,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("showHelp", true)
         set(v) = sp.edit().putBoolean("showHelp", v).apply()
 
+    /** Presets the user saved, in the order they were added. */
+    fun loadUserPresets(): List<UserPreset> =
+        PresetCodec.decodeAll(sp.getString("userPresets", null), DeEsserParams())
+
+    fun saveUserPresets(list: List<UserPreset>) {
+        sp.edit().putString("userPresets", PresetCodec.encodeAll(list)).apply()
+    }
+
     fun load(): DeEsserParams {
         val d = DeEsserParams()
         return DeEsserParams(
