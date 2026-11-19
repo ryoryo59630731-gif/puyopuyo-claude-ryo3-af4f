@@ -134,6 +134,7 @@ public:
 
 private:
     void timerCallback() override;
+    void updatePresetBox();
     void attachSelectedTarget();
     void setChoice (const juce::String& id, int index);
     int choice (const juce::String& id) const;
@@ -181,6 +182,8 @@ private:
         analysisAttachment;
 
     int attachedTarget = -1;
+    int shownProgram = -1;       // what the preset box currently shows (see updatePresetBox)
+    bool shownModified = false;
     bool constructed = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SasariEditor)

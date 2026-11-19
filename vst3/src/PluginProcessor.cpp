@@ -143,11 +143,8 @@ void SasariProcessor::setParam (const juce::String& id, float value)
     }
 }
 
-void SasariProcessor::setCurrentProgram (int index)
+std::vector<std::pair<juce::String, float>> SasariProcessor::programValues (int index) const
 {
-    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
-        return;
-    currentProgram = index;
     sasari::Settings s;
     const auto current = raw.read();
     s.bandsPerOctave = current.bandsPerOctave; // device-level choices are kept
@@ -155,31 +152,57 @@ void SasariProcessor::setCurrentProgram (int index)
     s.extendedRange = current.extendedRange;
     presets()[(size_t) index].apply (s);
 
-    undoManager.beginNewTransaction();
     using namespace sasari::params;
+    std::vector<std::pair<juce::String, float>> v;
     for (int f = 0; f < kNumFocus; ++f)
     {
         const auto& fs = s.focus[(size_t) f];
-        setParam (id (f, "on"), fs.enabled ? 1.0f : 0.0f);
-        setParam (id (f, "low"), fs.lowHz);
-        setParam (id (f, "high"), fs.highHz);
-        setParam (id (f, "proc"), fs.processing);
-        setParam (id (f, "int"), fs.intensity);
-        setParam (id (f, "ch"), (float) fs.channel);
+        v.emplace_back (id (f, "on"), fs.enabled ? 1.0f : 0.0f);
+        v.emplace_back (id (f, "low"), fs.lowHz);
+        v.emplace_back (id (f, "high"), fs.highHz);
+        v.emplace_back (id (f, "proc"), fs.processing);
+        v.emplace_back (id (f, "int"), fs.intensity);
+        v.emplace_back (id (f, "ch"), (float) fs.channel);
     }
-    setParam (customAttack, s.focus[(size_t) kCustom].attackMs);
-    setParam (customRelease, s.focus[(size_t) kCustom].releaseMs);
-    setParam (selected, (float) s.selected);
-    setParam (sharpness, s.sharpness);
-    setParam (mix, s.mix);
-    setParam (range, s.rangeDb);
-    setParam (output, s.outputDb);
-    setParam (selectivity, s.selectivity);
-    setParam (analysis, s.extendedRange ? 1.0f : 0.0f);
-    setParam (listen, 0.0f);
-    setParam (shelfOn, s.shelfOn ? 1.0f : 0.0f);
-    setParam (shelfFreq, s.shelfHz);
-    setParam (shelfGain, s.shelfDb);
+    v.emplace_back (customAttack, s.focus[(size_t) kCustom].attackMs);
+    v.emplace_back (customRelease, s.focus[(size_t) kCustom].releaseMs);
+    v.emplace_back (selected, (float) s.selected);
+    v.emplace_back (sharpness, s.sharpness);
+    v.emplace_back (mix, s.mix);
+    v.emplace_back (range, s.rangeDb);
+    v.emplace_back (output, s.outputDb);
+    v.emplace_back (selectivity, s.selectivity);
+    v.emplace_back (analysis, s.extendedRange ? 1.0f : 0.0f);
+    v.emplace_back (listen, 0.0f);
+    v.emplace_back (shelfOn, s.shelfOn ? 1.0f : 0.0f);
+    v.emplace_back (shelfFreq, s.shelfHz);
+    v.emplace_back (shelfGain, s.shelfDb);
+    return v;
+}
+
+void SasariProcessor::setCurrentProgram (int index)
+{
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
+        return;
+    currentProgram = index;
+    undoManager.beginNewTransaction();
+    for (const auto& [paramId, value] : programValues (index))
+        setParam (paramId, value);
+}
+
+bool SasariProcessor::programMatchesParameters (int index)
+{
+    if (! juce::isPositiveAndBelow (index, getNumPrograms()))
+        return false;
+    for (const auto& [paramId, value] : programValues (index))
+    {
+        if (paramId == sasari::params::selected || paramId == sasari::params::listen)
+            continue; // which target is being edited and the monitor mode are not sound settings
+        if (auto* p = apvts.getParameter (paramId))
+            if (std::abs (p->getValue() - p->convertTo0to1 (value)) > 1.0e-4f)
+                return false;
+    }
+    return true;
 }
 
 // ---- learn ----
@@ -222,7 +245,7 @@ void SasariProcessor::copySlotToOther() { ab.copyToOther (captureValues()); }
 void SasariProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
-    state.setProperty ("program", currentProgram, nullptr);
+    state.setProperty ("program", currentProgram.load(), nullptr);
     state.setProperty ("editorScale", editorScale, nullptr);
 
     const auto profile = engine.getProfile();
@@ -256,7 +279,7 @@ void SasariProcessor::setStateInformation (const void* data, int sizeInBytes)
     if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
         return;
     auto tree = juce::ValueTree::fromXml (*xml);
-    currentProgram = tree.getProperty ("program", 0);
+    currentProgram = juce::jlimit (0, getNumPrograms() - 1, (int) tree.getProperty ("program", 0));
     editorScale = (float) (double) tree.getProperty ("editorScale", 1.0);
 
     sasari::Engine::Profile profile;

@@ -63,6 +63,19 @@ struct Music
     }
 };
 
+/** The editor's preset box: the only combo box that lists every preset. */
+juce::ComboBox* findPresetBox (juce::Component& root, int numPrograms)
+{
+    for (auto* c : root.getChildren())
+    {
+        if (auto* box = dynamic_cast<juce::ComboBox*> (c); box != nullptr && box->getNumItems() == numPrograms)
+            return box;
+        if (auto* found = findPresetBox (*c, numPrograms))
+            return found;
+    }
+    return nullptr;
+}
+
 void process (SasariProcessor& p, Music& m, double seconds, std::function<void()> everyBlock = nullptr)
 {
     juce::AudioBuffer<float> b (2, 480);
@@ -162,6 +175,27 @@ int main (int argc, char** argv)
         check (st.focus[1].channel == sasari::ChannelMode::Mid && st.focus[2].channel == sasari::ChannelMode::Side,
                "per-target channels reach the engine settings");
     }
+    check (p.getCurrentProgram() == 6 && p.programMatchesParameters (6), "current preset is reported and matches the parameters");
+    set (p, range, 3.0f);
+    check (! p.programMatchesParameters (6), "changing a sound setting departs from the preset");
+    set (p, range, 12.0f);
+    set (p, selected, 2.0f);
+    set (p, listen, 1.0f);
+    check (p.programMatchesParameters (6), "edit target and monitor mode do not count as changes");
+    set (p, listen, 0.0f);
+    {
+        juce::MemoryBlock st;
+        p.getStateInformation (st);
+        SasariProcessor q;
+        q.setPlayConfigDetails (2, 2, 48000, 480);
+        q.prepareToPlay (48000, 480);
+        q.setStateInformation (st.getData(), (int) st.getSize());
+        check (q.getCurrentProgram() == 6 && q.programMatchesParameters (6), "preset number restored with the project");
+    }
+    {
+        SasariProcessor fresh;
+        check (fresh.getCurrentProgram() == 0 && fresh.programMatchesParameters (0), "a new instance holds the Standard preset");
+    }
     p.setCurrentProgram (7);
     check (value (p, id (3, "on")) > 0.5f && value (p, analysis) > 0.5f, "nasal preset: custom target + extended range");
     process (p, music, 0.2);
@@ -215,12 +249,32 @@ int main (int argc, char** argv)
     }
     editor->setSize (1300, 962);
     check (std::abs (p.editorScale - 1.3f) < 0.01f, "editor scales and remembers its size");
+    p.setCurrentProgram (6); // the reopened editor has to show it
+    set (p, analysis, 0.0f);
     // Close and reopen the way the VST3 wrapper does.
     p.editorBeingDeleted (editor.get());
     editor = nullptr;
     editor.reset (p.createEditorIfNeeded());
     check (editor != nullptr && editor->getWidth() == 1300,
            "reopened editor keeps the size: " + juce::String (editor != nullptr ? editor->getWidth() : -1));
+
+    // ---- preset box ----
+    std::printf ("[preset box]\n");
+    if (auto* box = editor != nullptr ? findPresetBox (*editor, p.getNumPrograms()) : nullptr)
+    {
+        check (box->getSelectedId() == 7 && box->getText() == p.getProgramName (6),
+               "reopened editor shows the current preset: " + box->getText());
+        set (p, range, 3.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        check (box->getSelectedId() == 0 && box->getText().contains (p.getProgramName (6)) && box->getText() != p.getProgramName (6),
+               "a changed setting is marked on the preset");
+        box->setSelectedId (7, juce::sendNotificationSync);
+        check (std::abs (value (p, range) - 12.0f) < 0.01f, "picking the same preset again re-applies it");
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (300);
+        check (box->getSelectedId() == 7 && box->getText() == p.getProgramName (6), "preset shown plainly again");
+    }
+    else
+        check (false, "preset box found in the editor");
     feeder.stopTimer();
     p.editorBeingDeleted (editor.get());
     editor = nullptr;

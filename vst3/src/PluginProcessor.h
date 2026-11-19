@@ -28,10 +28,14 @@ public:
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override;
-    int getCurrentProgram() override { return currentProgram; }
+    int getCurrentProgram() override { return currentProgram.load(); }
     void setCurrentProgram (int index) override;
     const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
+
+    /** True while the parameters still hold what preset `index` sets. The edit target and the monitor
+        mode are ignored (they do not change the sound settings). Message thread. */
+    bool programMatchesParameters (int index);
 
     void getStateInformation (juce::MemoryBlock& destData) override;
     void setStateInformation (const void* data, int sizeInBytes) override;
@@ -60,9 +64,11 @@ private:
     sasari::AbSlots::Values captureValues() const;
     void applyValues (const sasari::AbSlots::Values& values);
     void setParam (const juce::String& id, float value);
+    /** The parameter values preset `index` sets, given the current device-level choices. */
+    std::vector<std::pair<juce::String, float>> programValues (int index) const;
 
     sasari::params::Raw raw;
-    int currentProgram = 0;
+    std::atomic<int> currentProgram { 0 };
     sasari::AbSlots ab;
     std::atomic<int> latencyWanted { 0 };
 

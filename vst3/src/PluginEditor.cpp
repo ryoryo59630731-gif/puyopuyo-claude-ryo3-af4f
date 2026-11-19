@@ -486,6 +486,7 @@ SasariEditor::SasariEditor (SasariProcessor& p)
             proc.setCurrentProgram (presetBox.getSelectedId() - 1);
     };
     body.addAndMakeVisible (presetBox);
+    updatePresetBox(); // show the preset restored with the project / chosen in the host
 
     for (int i = 0; i < 2; ++i)
     {
@@ -651,10 +652,27 @@ void SasariEditor::attachSelectedTarget()
     targetHint.setText (jp (targetHintText (f)), juce::dontSendNotification);
 }
 
+// Shows the current preset; once a sound setting differs from it (knob, undo, A/B, automation) the
+// box says so and has no selection, so picking the same preset again re-applies it.
+void SasariEditor::updatePresetBox()
+{
+    const int program = proc.getCurrentProgram();
+    const bool modified = ! proc.programMatchesParameters (program);
+    if (program == shownProgram && modified == shownModified)
+        return;
+    shownProgram = program;
+    shownModified = modified;
+    if (modified)
+        presetBox.setText (jp ("変更あり：") + proc.getProgramName (program), juce::dontSendNotification);
+    else
+        presetBox.setSelectedId (program + 1, juce::dontSendNotification);
+}
+
 void SasariEditor::timerCallback()
 {
     if (choice (params::selected) != attachedTarget)
         attachSelectedTarget();
+    updatePresetBox();
 
     const auto s = proc.currentSettings();
     const Layout layout (s.bandsPerOctave, s.extendedRange);
